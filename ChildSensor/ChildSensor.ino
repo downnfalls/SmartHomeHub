@@ -172,7 +172,7 @@ void meshCallback(uint32_t from, String &msg) {
       gpioMode = payload;
       pref.end();
 
-      Serial.prinf("Mode Updated: %s\n", gpioMode.c_str());
+      Serial.printf("Mode Updated: %s\n", gpioMode.c_str());
 
       meshSend(mesh_gateway, "update_mode_response", "OK");
 
