@@ -247,8 +247,6 @@ void setup() {
     }
   }
 
-  Serial.printf("GPIO mode: %s\n", gpioMode.c_str());
-
   pref.end();
 
   esp_log_level_set("wifi", ESP_LOG_NONE);
