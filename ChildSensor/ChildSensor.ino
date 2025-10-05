@@ -170,7 +170,7 @@ void meshCallback(uint32_t from, String &msg) {
       pref.putString("gpio_mode", payload);
 
       DynamicJsonDocument json(256);
-      DezerializationError error = deserializeJson(json, payload);
+      DeserializationError error = deserializeJson(json, payload);
       if (!error) {
         gpioMode = json;
         pref.end();
