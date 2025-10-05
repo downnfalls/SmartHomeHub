@@ -27,7 +27,7 @@ String mesh_password = "";
 uint32_t mesh_port = 0;
 bool first_init = false;
 std::map<std::string, bool> gpioStateMap;
-String gpioMode;
+DynamicJsonDocument gpioMode(256);
 
 // =====================================================
 //                   BLE LOGIC
@@ -169,13 +169,13 @@ void meshCallback(uint32_t from, String &msg) {
       pref.begin("gpio_mode", false);
       pref.putString("gpio_mode", payload);
 
-      gpioMode = payload;
-      pref.end();
-
-      Serial.printf("Mode Updated: %s\n", gpioMode.c_str());
-
-      meshSend(mesh_gateway, "update_mode_response", "OK");
-
+      DynamicJsonDocument json(256);
+      DezerializationError error = deserializeJson(json, payload);
+      if (!error) {
+        gpioMode = json;
+        pref.end();
+        meshSend(mesh_gateway, "update_mode_response", "OK");
+      }
     }
   }
 }
@@ -220,15 +220,31 @@ void setup() {
   pinMode(GPIO0, INPUT_PULLDOWN);
   pinMode(GPIO1, INPUT_PULLDOWN);
   pinMode(GPIO3, INPUT_PULLDOWN);
+  pinMode(2, OUTPUT);
+  digitalWrite(BUILTIN_LED, HIGH);
 
   // set gpio mode
   pref.begin("gpio_mode", false);
-  if (pref.getType("gpio_mode") == 0) {
-    String modeConfig =  R"("gpio_0":"button","gpio_1":"button","gpio_3":"button")";
+
+  if (pref.getString("gpio_mode").isEmpty()) {
+
+    DynamicJsonDocument mode(256);
+    mode["gpio_0"] = "button";
+    mode["gpio_1"] = "button";
+    mode["gpio_3"] = "button";
+
+    String modeConfig;
+    serializeJson(mode, modeConfig);
     pref.putString("gpio_mode", modeConfig);
-    gpioMode = modeConfig;
+
+    gpioMode = mode;
   } else {
-    gpioMode = pref.getString("gpio_mode");
+    String modeConfig = pref.getString("gpio_mode");
+    DynamicJsonDocument mode(256);
+    DeserializationError error = deserializeJson(mode, modeConfig);
+    if (!error) {
+      gpioMode = mode;
+    }
   }
 
   Serial.printf("GPIO mode: %s\n", gpioMode.c_str());
@@ -327,15 +343,12 @@ void loop() {
   // Sensor Detect Logic
 
   // GPIO
-  if (millis() - lastTime >= 500) {
-    lastTime = millis();
 
-    bool gp0 = digitalRead(GPIO0);
-    bool gp1 = digitalRead(GPIO1);
-    bool gp3 = digitalRead(GPIO3);
+  bool gp0 = digitalRead(GPIO0);
+  bool gp1 = digitalRead(GPIO1);
+  bool gp3 = digitalRead(GPIO3);
 
-    triggerStateUpdate(gp0, gp1, gp3);
-  }
+  triggerStateUpdate(gp0, gp1, gp3);
 
 }
 

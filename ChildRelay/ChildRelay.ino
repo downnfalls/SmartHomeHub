@@ -296,8 +296,6 @@ void loop() {
       Serial.println("Disconnected from mesh network.\nRebooting...");
       ESP.restart();
     }
-    
-    
   }
 }
 
