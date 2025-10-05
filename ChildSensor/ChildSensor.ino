@@ -3,10 +3,11 @@
 #include "WiFi.h"
 #include "Preferences.h"
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include <map>
 
 #define GPIO0   0
 #define GPIO1   1
-#define GPIO2   2
 #define GPIO3   3
 #define SDAPIN  8
 #define SCLPIN  9
@@ -16,7 +17,7 @@ void meshSend(uint32_t mesh_id, const char *cmd, String text);
 void bluetoothAdvertise();
 
 painlessMesh mesh;
-Preferences preferences;
+Preferences pref;
 static NimBLEServer* pServer;
 
 bool mesh_init = false;
@@ -25,6 +26,8 @@ String mesh_ssid = "";
 String mesh_password = "";
 uint32_t mesh_port = 0;
 bool first_init = false;
+std::map<std::string, bool> gpioStateMap;
+String gpioMode;
 
 // =====================================================
 //                   BLE LOGIC
@@ -45,11 +48,11 @@ class GatewayCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.println(value.c_str());
 
     uint32_t cast = static_cast<uint32_t>(std::stoul(value));
-    preferences.begin("mesh", false);
-    preferences.putUInt("mesh_gateway", cast);
-    uint32_t debug = preferences.getUInt("mesh_gateway", 0);
+    pref.begin("mesh", false);
+    pref.putUInt("mesh_gateway", cast);
+    uint32_t debug = pref.getUInt("mesh_gateway", 0);
     Serial.println(String(debug));
-    preferences.end();
+    pref.end();
     mesh_gateway = cast;
   }
 };
@@ -60,9 +63,9 @@ class MeshSSIDCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.print("Received SSID: ");
     Serial.println(value.c_str());
 
-    preferences.begin("mesh", false);
-    preferences.putString("mesh_ssid", String(value.c_str()));
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putString("mesh_ssid", String(value.c_str()));
+    pref.end();
     mesh_ssid = String(value.c_str());
   }
 };
@@ -73,9 +76,9 @@ class MeshPasswordCharacteristicCallback : public NimBLECharacteristicCallbacks 
     Serial.print("Received Password: ");
     Serial.println(value.c_str());
 
-    preferences.begin("mesh", false);
-    preferences.putString("mesh_password", String(value.c_str()));
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putString("mesh_password", String(value.c_str()));
+    pref.end();
     mesh_password = String(value.c_str());
   }
 };
@@ -87,9 +90,9 @@ class MeshPortCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.println(value.c_str());
 
     uint16_t cast = static_cast<uint16_t>(std::stoul(value));
-    preferences.begin("mesh", false);
-    preferences.putUInt("mesh_port", cast);
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putUInt("mesh_port", cast);
+    pref.end();
     mesh_port = cast;
 
     if (!mesh_ssid.isEmpty() && !mesh_password.isEmpty() && mesh_gateway != 0) {
@@ -161,22 +164,18 @@ void meshCallback(uint32_t from, String &msg) {
 
     }
 
-    if (cmd == "update_state" || cmd == "state_response") {
+    else if (cmd == "update_mode") {
 
-      DynamicJsonDocument state(512);
-      DeserializationError error = deserializeJson(state, payload);
+      pref.begin("gpio_mode", false);
+      pref.putString("gpio_mode", payload);
 
-      if (!error) {
-        if (state.containsKey("r1")) r1 = state["r1"];
-        if (state.containsKey("r2")) r2 = state["r2"];
+      gpioMode = payload;
+      pref.end();
 
-        Serial.println(String("R1: ") + ((r1) ? "true" : "false") + "\nR2: " + ((r2) ? "true" : "false"));
+      Serial.prinf("Mode Updated: %s\n", gpioMode.c_str());
 
-        digitalWrite(R1PIN, r1);
-        digitalWrite(R2PIN, r2);
-      }
+      meshSend(mesh_gateway, "update_mode_response", "OK");
 
-      if (cmd == "update_state") meshSend(mesh_gateway, "update_response", "OK");
     }
   }
 }
@@ -189,7 +188,7 @@ void meshSend(uint32_t mesh_id, const char* cmd, String text) {
 }
 
 void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
-  String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"relay\"}";
+  String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"sensor\"}";
   if (pair_res) {
     meshSend(mesh_gateway, "pair_res_info", json.c_str());
   } else {
@@ -198,8 +197,17 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   
 }
 
-void requestForState() {
-  meshSend(mesh_gateway, "state_request", "request");
+void triggerStateUpdate(bool gpio0, bool gpio1, bool gpio3) {
+
+  bool send = gpioStateMap["gpio0"] != gpio0 || gpioStateMap["gpio1"] != gpio1 || gpioStateMap["gpio3"] != gpio3;
+
+  gpioStateMap["gpio0"] = gpio0;
+  gpioStateMap["gpio1"] = gpio1;
+  gpioStateMap["gpio3"] = gpio3;
+
+  if (send) {
+    meshSend(mesh_gateway, "state_update", String("{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}");
+  }
 }
 
 // =====================================================
@@ -209,26 +217,42 @@ void requestForState() {
 void setup() {
   Serial.begin(115200);
 
+  pinMode(GPIO0, INPUT_PULLDOWN);
+  pinMode(GPIO1, INPUT_PULLDOWN);
+  pinMode(GPIO3, INPUT_PULLDOWN);
+
+  // set gpio mode
+  pref.begin("gpio_mode", false);
+  if (pref.getType("gpio_mode") == 0) {
+    String modeConfig =  R"("gpio_0":"button","gpio_1":"button","gpio_3":"button")";
+    pref.putString("gpio_mode", modeConfig);
+    gpioMode = modeConfig;
+  } else {
+    gpioMode = pref.getString("gpio_mode");
+  }
+
+  Serial.printf("GPIO mode: %s\n", gpioMode.c_str());
+
+  pref.end();
+
   esp_log_level_set("wifi", ESP_LOG_NONE);
 
   WiFi.mode(WIFI_AP_STA);
 
-  pinMode(R1PIN, OUTPUT);
-  pinMode(R2PIN, OUTPUT);
-  pinMode(8, OUTPUT);
-  digitalWrite(BUILTIN_LED, HIGH);
+  // I/O
+  // Wire.begin(SDAPIN, SCLPIN)
 
-  preferences.begin("mesh", true);
+  pref.begin("mesh", true);
   // mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
   mesh.onReceive(&meshCallback);
   mesh.setContainsRoot(true);
 
-  mesh_gateway = preferences.getUInt("mesh_gateway", 0);
-  mesh_ssid = preferences.getString("mesh_ssid", "");
-  mesh_password = preferences.getString("mesh_password", "");
-  mesh_port = preferences.getUInt("mesh_port", 0);
+  mesh_gateway = pref.getUInt("mesh_gateway", 0);
+  mesh_ssid = pref.getString("mesh_ssid", "");
+  mesh_password = pref.getString("mesh_password", "");
+  mesh_port = pref.getUInt("mesh_port", 0);
 
-  preferences.end();
+  pref.end();
 
   if (mesh_gateway != 0 && !mesh_ssid.isEmpty() && !mesh_password.isEmpty() && mesh_port != 0) {
 
@@ -260,15 +284,15 @@ void setup() {
 
 long long start_unpairing = 0;
 bool info = false;
+unsigned long long lastTime = 0;
 void loop() {
 
   if (mesh_init) {
     mesh.update();
-
+ 
     if (mesh.isConnected(mesh_gateway) && !info) {
       info = true;
       sendMeshNodeInfo(mesh.getNodeId(), first_init);
-      requestForState();
     }
 
     if (unpairing) {
@@ -286,12 +310,12 @@ void loop() {
       mesh_port = 0;
       mesh.stop();
 
-      preferences.begin("mesh", false);
-      preferences.remove("mesh_gateway");
-      preferences.remove("mesh_ssid");
-      preferences.remove("mesh_password");
-      preferences.remove("mesh_port");
-      preferences.end();
+      pref.begin("mesh", false);
+      pref.remove("mesh_gateway");
+      pref.remove("mesh_ssid");
+      pref.remove("mesh_password");
+      pref.remove("mesh_port");
+      pref.end();
 
       Serial.println("Disconnected from mesh network.\nRebooting...");
       ESP.restart();
@@ -299,5 +323,19 @@ void loop() {
     
     
   }
+
+  // Sensor Detect Logic
+
+  // GPIO
+  if (millis() - lastTime >= 500) {
+    lastTime = millis();
+
+    bool gp0 = digitalRead(GPIO0);
+    bool gp1 = digitalRead(GPIO1);
+    bool gp3 = digitalRead(GPIO3);
+
+    triggerStateUpdate(gp0, gp1, gp3);
+  }
+
 }
 

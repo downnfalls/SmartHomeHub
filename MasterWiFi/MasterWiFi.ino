@@ -26,7 +26,10 @@
 #define TOPIC_MESH_UNPAIR_RESPONSE    "res/mesh/unpair"
 #define TOPIC_STATE_UPDATE_REQUEST    "req/state/update"
 #define TOPIC_STATE_UPDATE_RESPONSE   "res/state/update"
-
+#define TOPIC_STATE_GET_REQUEST       "req/state/get"
+#define TOPIC_STATE_GET_RESPONSE      "res/state/get"
+#define TOPIC_MODE_UPDATE_REQUEST    "req/mode/update"
+#define TOPIC_MODE_UPDATE_RESPONSE    "res/mode/update"
 
 #define EEPROM_SIZE 50
 
@@ -183,6 +186,13 @@ void mqttCallback(char* topic, byte* message, unsigned int length) {
   else if (String(topic) == TOPIC_STATE_UPDATE_REQUEST) {
     sendSerial("req/state/update", incoming.c_str());
   }
+  else if (String(topic) == TOPIC_STATE_GET_REQUEST) {
+    sendSerial("req/state/get", incoming.c_str());
+  }
+
+  else if (String(topic) == TOPIC_MODE_UPDATE_REQUEST) {
+    sendSerial("req/mode/update", incoming.c_str());
+  }
 }
 
 void connectMQTT() {
@@ -198,6 +208,8 @@ void connectMQTT() {
       pubSubClient.subscribe(TOPIC_MESH_UNPAIR_REQUEST);
       pubSubClient.subscribe(TOPIC_MESH_ALL_NODE_REQUEST);
       pubSubClient.subscribe(TOPIC_STATE_UPDATE_REQUEST);
+      pubSubClient.subscribe(TOPIC_STATE_GET_REQUEST);
+      pubSubClient.subscribe(TOPIC_MODE_UPDATE_REQUEST);
       Serial.println("MQTT Connected!");
     } else {
       Serial.println("Failed MQTT connection");
@@ -409,5 +421,17 @@ void handleSerialCallback(SerialMessage &msg) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_STATE_UPDATE_RESPONSE, message.c_str());
+  }
+
+  else if (strcmp(msg.command, "res/mdoe/update") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_MODE_UPDATE_RESPONSE, message.c_str());
+  }
+
+  else if (strcmp(msg.command, "res/state/get") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_STATE_GET_RESPONSE, message.c_str());
   }
 }

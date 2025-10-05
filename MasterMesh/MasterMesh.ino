@@ -344,8 +344,48 @@ void handleSerialCallback(SerialMessage &msg) {
     if (!error) {
       uint32_t nodeId = incoming["node_id"];
 
-      updateState(nodeId, incoming["state"]);
+      updateState(nodeId, incoming["state"], true);
     }
+  }
+  
+  else if (strcmp(msg.command, "req/mode/update") == 0) {
+
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    
+    DynamicJsonDocument incoming(256);
+    DeserializationError error = deserializeJson(incoming, message);
+    
+    if (!error) {
+      uint32_t nodeId = incoming["node_id"];
+
+      JsonObject obj = incoming["mode"];
+
+      String objStr;
+      serializeJson(obj, objStr);
+
+      meshSend(nodeId, "update_mode", objStr);
+    }
+  }
+
+  else if (strcmp(msg.command, "req/state/get") == 0) {
+
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    
+    uint32_t node_id = static_cast<uint32_t>(std::stoul(message));
+
+    DynamicJsonDocument output(512);
+    output["node_id"] = node_id;
+
+    DynamicJsonDocument state = getState(node_id);
+
+    output["state"] = state;
+
+    String outputStr;
+    serializeJson(output, outputStr);
+
+    sendSerial("res/state/get", outputStr.c_str());
   }
 }
 
@@ -353,13 +393,13 @@ void handleSerialCallback(SerialMessage &msg) {
 //                     STATE LOGIC
 // =====================================================
 
-void updateState(uint32_t node_id, JsonObject state) {
+void updateState(uint32_t node_id, JsonObject state, bool callback) {
   String stateStr;
   serializeJson(state, stateStr);
 
   nodeStateMap[node_id] = stateStr.c_str();  // store serialized JSON
 
-  meshSend(node_id, "update_state", stateStr);
+  if (callback) meshSend(node_id, "update_state", stateStr);
 }
 
 DynamicJsonDocument getState(uint32_t node_id) {
@@ -462,10 +502,17 @@ void meshCallback(uint32_t from, String &msg) {
       }
     }
   }
-  else if (cmd == "update_response") {
+
+  else if (cmd == "update_state_response") {
     String res = String("{\"node_id\":\"") + String(from) + "\",\"info\":\"" + payload + "\"}";
     sendSerial("res/state/update", res.c_str());
   }
+
+  else if (cmd == "update_mode_response") {
+    String res = String("{\"node_id\":\"") + String(from) + "\",\"info\":\"" + payload + "\"}";
+    sendSerial("res/mode/update", res.c_str());
+  }
+
   else if (cmd == "state_request") {
 
     DynamicJsonDocument state = getState(from);
@@ -474,7 +521,16 @@ void meshCallback(uint32_t from, String &msg) {
     serializeJson(state, stateStr);
     
     meshSend(from, "state_response", stateStr);
+  }
 
+  else if (cmd == "state_update") {
+
+    DynamicJsonDocument state(512);
+    DeserializationError error = deserializeJson(state, payload);
+    
+    if (!error) {
+      updateState(from, state.as<JsonObject>(), false);
+    }
   }
 }
 

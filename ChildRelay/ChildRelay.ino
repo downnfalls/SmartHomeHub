@@ -175,7 +175,7 @@ void meshCallback(uint32_t from, String &msg) {
         digitalWrite(R2PIN, r2);
       }
 
-      if (cmd == "update_state") meshSend(mesh_gateway, "update_response", "OK");
+      if (cmd == "update_state") meshSend(mesh_gateway, "update_state_response", "OK");
     }
   }
 }
