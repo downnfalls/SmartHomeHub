@@ -28,6 +28,7 @@ uint32_t mesh_port = 0;
 bool first_init = false;
 std::map<std::string, bool> gpioStateMap;
 DynamicJsonDocument gpioMode(256);
+uint64_t lastTime = 0;
 
 // =====================================================
 //                   BLE LOGIC
@@ -197,16 +198,90 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   
 }
 
-void triggerStateUpdate(bool gpio0, bool gpio1, bool gpio3) {
+class ButtonModeProcess;
+class ToggleModeProcess;
+class DelayModeProcess;
 
-  bool send = gpioStateMap["gpio0"] != gpio0 || gpioStateMap["gpio1"] != gpio1 || gpioStateMap["gpio3"] != gpio3;
+std::map<std::string, bool> toggleState;
+std::map<std::string, bool> lastState;
+std::map<std::string, uint64_t> lastKeep;
+class GPIOModeProcess {
+  protected:
+    bool gp;
+    std::string key;
+    GPIOModeProcess(bool gp, std::string key) : gp(gp), key(key) {}
+  public:
+    virtual bool process() = 0;
+};
+class ButtonModeProcess : public GPIOModeProcess {
+  public:
+    ButtonModeProcess(bool gp, const std::string& key) : GPIOModeProcess(gp, key) {}
+    bool process() override { return gp; }
+};
+class ToggleModeProcess : public GPIOModeProcess {
+  public:
+    ToggleModeProcess(bool gp, const std::string& key) : GPIOModeProcess(gp, key) {}
+    bool process() override {
+      if (gp != lastState[key]) {
+        lastState[key] = gp;
+        if (gp) {
+          toggleState[key] = !toggleState[key];
+        }
+      }
+      return toggleState[key];
+    }
+};
+class DelayModeProcess : public GPIOModeProcess {
+  public:
+    DelayModeProcess(bool gp, const std::string& key) : GPIOModeProcess(gp, key) {}
+    bool process() override {
+      if (gp != lastState[key]) {
+        lastState[key] = gp;
+        if (!gp) {
+          lastKeep[key] = millis();
+        }
+      }
 
-  gpioStateMap["gpio0"] = gpio0;
-  gpioStateMap["gpio1"] = gpio1;
-  gpioStateMap["gpio3"] = gpio3;
+      return gp || millis() - lastKeep[key] <= 10000;
+    }
+};
 
-  if (send) {
-    meshSend(mesh_gateway, "state_update", String("{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}");
+bool processGPIO(const String& mode, bool gp, const std::string& key) {
+    if (mode == "button") {
+        ButtonModeProcess obj(gp, key);
+        return obj.process();
+    } else if (mode == "toggle") {
+        ToggleModeProcess obj(gp, key);
+        return obj.process();
+    } else if (mode == "delay") {
+        DelayModeProcess obj(gp, key);
+        return obj.process();
+    }
+    return false;
+}
+
+void triggerStateUpdate() {
+
+  if (millis() - lastTime >= 500) {
+    lastTime = millis();
+
+    bool gp0 = digitalRead(GPIO0);
+    bool gp1 = digitalRead(GPIO1);
+    bool gp3 = digitalRead(GPIO3);
+
+    bool gpio0 = processGPIO(gpioMode["gpio_0"], gp0, "gpio_0");
+    bool gpio1 = processGPIO(gpioMode["gpio_1"], gp1, "gpio_1");
+    bool gpio3 = processGPIO(gpioMode["gpio_3"], gp3, "gpio_3");
+
+    bool send = gpioStateMap["gpio0"] != gpio0 || gpioStateMap["gpio1"] != gpio1 || gpioStateMap["gpio3"] != gpio3;
+
+    gpioStateMap["gpio0"] = gpio0;
+    gpioStateMap["gpio1"] = gpio1;
+    gpioStateMap["gpio3"] = gpio3;
+
+    if (send) {
+      meshSend(mesh_gateway, "state_update", String("{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}");
+    }
   }
 }
 
@@ -249,6 +324,10 @@ void setup() {
 
   pref.end();
 
+  String modeStr;
+  serializeJson(gpioMode, modeStr);
+  Serial.println(String("Mode HERE: ") + modeStr);
+
   esp_log_level_set("wifi", ESP_LOG_NONE);
 
   WiFi.mode(WIFI_AP_STA);
@@ -290,6 +369,8 @@ void setup() {
     // Start Bluetooth if no mesh credentials
     bluetoothAdvertise();
   }
+
+  
 }
 
 // =====================================================
@@ -298,7 +379,6 @@ void setup() {
 
 long long start_unpairing = 0;
 bool info = false;
-unsigned long long lastTime = 0;
 void loop() {
 
   if (mesh_init) {
@@ -341,12 +421,7 @@ void loop() {
   // Sensor Detect Logic
 
   // GPIO
-
-  bool gp0 = digitalRead(GPIO0);
-  bool gp1 = digitalRead(GPIO1);
-  bool gp3 = digitalRead(GPIO3);
-
-  triggerStateUpdate(gp0, gp1, gp3);
+  triggerStateUpdate();
 
 }
 
