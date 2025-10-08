@@ -30,6 +30,12 @@
 #define TOPIC_STATE_GET_RESPONSE      "res/state/get"
 #define TOPIC_MODE_UPDATE_REQUEST     "req/mode/update"
 #define TOPIC_MODE_UPDATE_RESPONSE    "res/mode/update"
+#define TOPIC_CONFIGURATION_SET_REQUEST     "req/config/set"
+#define TOPIC_CONFIGURATION_SET_RESPONSE    "res/config/set"
+#define TOPIC_CONFIGURATION_REMOVE_REQUEST  "req/config/remove"
+#define TOPIC_CONFIGURATION_REMOVE_RESPONSE "res/config/remove"
+#define TOPIC_CONFIGURATION_GET_REQUEST     "req/config/get"
+#define TOPIC_CONFIGURATION_GET_RESPONSE    "res/config/get"
 
 #define EEPROM_SIZE 50
 
@@ -58,7 +64,7 @@ void connectMQTT();
 void sendSerial(const char cmd[16], uint8_t *payload, unsigned int length);
 void sendSerial(const char cmd[16], const char *text);
 void sendSerial(const char cmd[16], std::vector<uint32_t> &list);
-void handleSerialCallback(SerialMessage &msg);
+void serialCallback(SerialMessage &msg);
 SerialMessage receiveSerialMessage();
 
 // =====================================================
@@ -144,7 +150,7 @@ void loop() {
   }
 
   SerialMessage msg = receiveSerialMessage();
-  if (msg.valid) handleSerialCallback(msg);
+  if (msg.valid) serialCallback(msg);
 }
 
 
@@ -189,9 +195,17 @@ void mqttCallback(char* topic, byte* message, unsigned int length) {
   else if (String(topic) == TOPIC_STATE_GET_REQUEST) {
     sendSerial("req/state/get", incoming.c_str());
   }
-
   else if (String(topic) == TOPIC_MODE_UPDATE_REQUEST) {
     sendSerial("req/mode/update", incoming.c_str());
+  }
+  else if (String(topic) == TOPIC_CONFIGURATION_SET_REQUEST) {
+    sendSerial("req/config/set", incoming.c_str());
+  }
+  else if (String(topic) == TOPIC_CONFIGURATION_GET_REQUEST) {
+    sendSerial("req/config/get", incoming.c_str());
+  }
+  else if (String(topic) == TOPIC_CONFIGURATION_REMOVE_REQUEST) {
+    sendSerial("req/config/rem", incoming.c_str());
   }
 }
 
@@ -210,6 +224,9 @@ void connectMQTT() {
       pubSubClient.subscribe(TOPIC_STATE_UPDATE_REQUEST);
       pubSubClient.subscribe(TOPIC_STATE_GET_REQUEST);
       pubSubClient.subscribe(TOPIC_MODE_UPDATE_REQUEST);
+      pubSubClient.subscribe(TOPIC_CONFIGURATION_REMOVE_REQUEST);
+      pubSubClient.subscribe(TOPIC_CONFIGURATION_GET_REQUEST);
+      pubSubClient.subscribe(TOPIC_CONFIGURATION_SET_REQUEST);
       Serial.println("MQTT Connected!");
     } else {
       Serial.println("Failed MQTT connection");
@@ -307,7 +324,7 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
     Serial.write(payload, payloadSize);
 }
 
-void handleSerialCallback(SerialMessage &msg) {
+void serialCallback(SerialMessage &msg) {
   if (strcmp(msg.command, "res/nodes") == 0) {
 
     std::string message(msg.length, '\0');
@@ -423,7 +440,7 @@ void handleSerialCallback(SerialMessage &msg) {
     pubSubClient.publish(TOPIC_STATE_UPDATE_RESPONSE, message.c_str());
   }
 
-  else if (strcmp(msg.command, "res/mdoe/update") == 0) {
+  else if (strcmp(msg.command, "res/mode/update") == 0) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_MODE_UPDATE_RESPONSE, message.c_str());
@@ -433,5 +450,20 @@ void handleSerialCallback(SerialMessage &msg) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_STATE_GET_RESPONSE, message.c_str());
+  }
+  else if (strcmp(msg.command, "res/config/get") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_CONFIGURATION_GET_RESPONSE, message.c_str());
+  }
+  else if (strcmp(msg.command, "res/config/set") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_CONFIGURATION_SET_RESPONSE, message.c_str());
+  }
+  else if (strcmp(msg.command, "res/config/rem") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_CONFIGURATION_REMOVE_RESPONSE, message.c_str());
   }
 }

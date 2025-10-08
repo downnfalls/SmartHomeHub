@@ -37,7 +37,7 @@ void sendSerial(const char cmd[16], uint8_t *payload, unsigned int length);
 void sendSerial(const char cmd[16], const char *text);
 void sendSerial(const char cmd[16], std::vector<uint32_t> &list);
 SerialMessage receiveSerialMessage();
-void handleSerialCallback(SerialMessage &msg);
+void serialCallback(SerialMessage &msg);
 void meshSend(uint32_t mesh_id, const char* cmd, String text);
 
 Preferences pref;
@@ -47,6 +47,7 @@ painlessMesh mesh;
 int countTimes = 0;
 bool is_pairing = false;
 NimBLEClient *pClient = NimBLEDevice::createClient();
+DynamicJsonDocument configuration(1024);
 
 // =====================================================
 //                     BLE LOGIC
@@ -205,7 +206,7 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
     sendSerial(cmd, payload, payloadSize);
 }
 
-void handleSerialCallback(SerialMessage &msg) {
+void serialCallback(SerialMessage &msg) {
 
   Serial.println("Receiving serial message...");
 
@@ -399,6 +400,83 @@ void handleSerialCallback(SerialMessage &msg) {
 
     sendSerial("res/state/get", outputStr.c_str());
   }
+
+  else if (strcmp(msg.command, "req/config/set") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+
+    DynamicJsonDocument input(1024);
+    DeserializationError error = deserializeJson(input, message);
+    
+    if (!error) {
+
+      pref.begin("nodes", true);
+      String json = pref.isKey("save_nodes") ? pref.getString("save_nodes") : "{}";
+      DynamicJsonDocument saveNodes(2048);
+      DeserializationError error2 = deserializeJson(saveNodes, json);
+      pref.end();
+
+      if (!error2) {
+        for (JsonPair entry : input.as<JsonObject>()) {
+          String nodeId = String(entry.key().c_str());
+          
+          bool found = false;
+          for (JsonPair saveNodeEntry : saveNodes.as<JsonObject>()) {
+            uint32_t saveNodeID = saveNodeEntry.value()["node_id"];
+            if (((uint32_t) nodeId.toInt()) == saveNodeID) {
+              found = true;
+              break;
+            }
+          }
+
+          if (found) {
+            configuration[nodeId] = entry.value();
+            sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
+
+            pref.begin("configuration", false);
+            
+            String configStr;
+            serializeJson(configuration, configStr);
+            
+            pref.putString("config", configStr);
+            Serial.println(pref.getString("config").c_str());
+            pref.end();
+
+          } else {
+            sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"ERROR\",\"info\":\"node not found!\"}").c_str());
+          }
+        }
+      } else {
+        sendSerial("res/config/set", "{\"status\":\"ERROR\",\"info\":\"Data format error!\"}");
+      }
+    } else {
+      sendSerial("res/config/set", "{\"status\":\"ERROR\",\"info\":\"Data format error!\"}");
+    }
+  }
+  else if (strcmp(msg.command, "req/config/get") == 0) {
+    
+    String configStr;
+    serializeJson(configuration, configStr);
+
+    sendSerial("res/config/get", configStr.c_str());
+
+  }
+  else if (strcmp(msg.command, "req/config/rem") == 0) {
+
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+
+    configuration.remove(message);
+    sendSerial("res/config/rem", ("{\"node_id\":"+String(message.c_str())+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
+
+    pref.begin("configuration", false);
+    
+    String configStr;
+    serializeJson(configuration, configStr);
+    
+    pref.putString("config", configStr);
+    pref.end();
+  }
 }
 
 // =====================================================
@@ -447,7 +525,7 @@ void meshCallback(uint32_t from, String &msg) {
   Serial.println(String(from)+": "+cmd+"|"+payload);
 
   if (cmd == "unpairing") {
-    sendSerial("res/unpair", ("{\"node_id\":\""+String(from)+"\",\"mac_address\":\""+payload+"\",\"info\":\"unparing\"}").c_str());
+    sendSerial("res/unpair", ("{\"node_id\":"+String(from)+",\"mac_address\":\""+payload+"\",\"info\":\"unparing\"}").c_str());
     
     pref.begin("nodes", false);
     String json = pref.isKey("save_nodes") ? pref.getString("save_nodes") : "{}";
@@ -465,8 +543,18 @@ void meshCallback(uint32_t from, String &msg) {
     serializeJson(doc, docStr);
 
     pref.putString("save_nodes", docStr);
-
     pref.end();
+
+    configuration.remove(String(from));
+
+    pref.begin("configuration", false);
+    
+    String configStr;
+    serializeJson(configuration, configStr);
+    
+    pref.putString("config", configStr);
+    pref.end();
+    
   }
   else if (cmd == "node_info" || cmd == "pair_res_info") {
 
@@ -517,12 +605,12 @@ void meshCallback(uint32_t from, String &msg) {
   }
 
   else if (cmd == "update_state_response") {
-    String res = String("{\"node_id\":\"") + String(from) + "\",\"info\":\"" + payload + "\"}";
+    String res = String("{\"node_id\":") + String(from) + ",\"info\":\"" + payload + "\"}";
     sendSerial("res/state/update", res.c_str());
   }
 
   else if (cmd == "update_mode_response") {
-    String res = String("{\"node_id\":\"") + String(from) + "\",\"info\":\"" + payload + "\"}";
+    String res = String("{\"node_id\":") + String(from) + ",\"info\":\"" + payload + "\"}";
     sendSerial("res/mode/update", res.c_str());
   }
 
@@ -569,6 +657,12 @@ void setup() {
   pinMode(5, OUTPUT);
   digitalWrite(5, LOW);
 
+  pref.begin("configuration", true);
+  String configStr = pref.isKey("config") ? pref.getString("config") : "{}";
+  Serial.printf("config: %s\n", configStr.c_str());
+  deserializeJson(configuration, configStr);
+  pref.end();
+
   // Searching for new node
   NimBLEDevice::init("");
   NimBLEScan *pScan = NimBLEDevice::getScan();
@@ -583,8 +677,6 @@ void setup() {
   mesh.onReceive(&meshCallback);
   mesh.setRoot(true);
   mesh.setContainsRoot(true);
-
-  
 }
 
 // =====================================================
@@ -599,7 +691,7 @@ void loop() {
   // ----- Check for ESP8266 Message -----
 
   SerialMessage msg = receiveSerialMessage();
-  if (msg.valid) handleSerialCallback(msg);
+  if (msg.valid) serialCallback(msg);
 
   if (millis() - lastTime >= 1000) {
     lastTime = millis();

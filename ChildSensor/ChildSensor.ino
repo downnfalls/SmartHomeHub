@@ -15,6 +15,9 @@
 #define TEMPERATURE_SENSOR_ADDRESS  0x5C
 #define LIGHT_SENSOR_ADDRESS        0x23
 
+#define GPIO_CHECK_INTERVAL 500
+#define I2C_CHECK_INTERVAL 2000
+
 void meshCallback(uint32_t from, String &msg);
 void meshSend(uint32_t mesh_id, const char *cmd, String text);
 void bluetoothAdvertise();
@@ -235,10 +238,8 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"sensor\"}";
   if (pair_res) {
     meshSend(mesh_gateway, "pair_res_info", json.c_str());
-    sendStateUpdate();
   } else {
     meshSend(mesh_gateway, "node_info", json.c_str());
-    sendStateUpdate();  
   }
   
 }
@@ -377,7 +378,7 @@ bool readBH1750() {
 void triggerStateUpdate() {
 
   // GPIO
-  if (millis() - lastTime >= 500) {
+  if (millis() - lastTime >= GPIO_CHECK_INTERVAL) {
     lastTime = millis();
 
     bool gp0 = digitalRead(GPIO0);
@@ -400,7 +401,7 @@ void triggerStateUpdate() {
   }
 
   // I2C
-  if (millis() - lastTime2 >= 2000) {
+  if (millis() - lastTime2 >= I2C_CHECK_INTERVAL) {
     lastTime2 = millis();
 
     bool send1 = false;

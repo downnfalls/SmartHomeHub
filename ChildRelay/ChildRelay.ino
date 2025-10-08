@@ -200,10 +200,8 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"relay\"}";
   if (pair_res) {
     meshSend(mesh_gateway, "pair_res_info", json.c_str());
-    sendStateUpdate();
   } else {
     meshSend(mesh_gateway, "node_info", json.c_str());
-    sendStateUpdate();
   }
 }
 
