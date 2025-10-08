@@ -12,6 +12,9 @@
 #define SDAPIN  8
 #define SCLPIN  9
 
+#define TEMPERATURE_SENSOR_ADDRESS  0x5C
+#define LIGHT_SENSOR_ADDRESS        0x23
+
 void meshCallback(uint32_t from, String &msg);
 void meshSend(uint32_t mesh_id, const char *cmd, String text);
 void bluetoothAdvertise();
@@ -29,6 +32,9 @@ bool first_init = false;
 std::map<std::string, bool> gpioStateMap;
 DynamicJsonDocument gpioMode(256);
 uint64_t lastTime = 0;
+bool gpio0 = false;
+bool gpio1 = false;
+bool gpio3 = false;
 
 // =====================================================
 //                   BLE LOGIC
@@ -145,6 +151,10 @@ void bluetoothAdvertise() {
 //                     MESH LOGIC
 // =====================================================
 
+void sendStateUpdate() {
+  meshSend(mesh_gateway, "state_update", String("{\"gpio\":{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}}");
+}
+
 bool unpairing = false;
 
 void meshCallback(uint32_t from, String &msg) {
@@ -178,6 +188,9 @@ void meshCallback(uint32_t from, String &msg) {
         meshSend(mesh_gateway, "update_mode_response", "OK");
       }
     }
+    else if (cmd == "get_state") {
+      sendStateUpdate();
+    }
   }
 }
 
@@ -192,11 +205,17 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"sensor\"}";
   if (pair_res) {
     meshSend(mesh_gateway, "pair_res_info", json.c_str());
+    sendStateUpdate();
   } else {
     meshSend(mesh_gateway, "node_info", json.c_str());
+    sendStateUpdate();  
   }
   
 }
+
+// =====================================================
+//              GPIO INPUT MODE CONFIGURE
+// =====================================================
 
 class ButtonModeProcess;
 class ToggleModeProcess;
@@ -269,9 +288,9 @@ void triggerStateUpdate() {
     bool gp1 = digitalRead(GPIO1);
     bool gp3 = digitalRead(GPIO3);
 
-    bool gpio0 = processGPIO(gpioMode["gpio_0"], gp0, "gpio_0");
-    bool gpio1 = processGPIO(gpioMode["gpio_1"], gp1, "gpio_1");
-    bool gpio3 = processGPIO(gpioMode["gpio_3"], gp3, "gpio_3");
+    gpio0 = processGPIO(gpioMode["gpio_0"], gp0, "gpio_0");
+    gpio1 = processGPIO(gpioMode["gpio_1"], gp1, "gpio_1");
+    gpio3 = processGPIO(gpioMode["gpio_3"], gp3, "gpio_3");
 
     bool send = gpioStateMap["gpio0"] != gpio0 || gpioStateMap["gpio1"] != gpio1 || gpioStateMap["gpio3"] != gpio3;
 
@@ -333,7 +352,7 @@ void setup() {
   WiFi.mode(WIFI_AP_STA);
 
   // I/O
-  // Wire.begin(SDAPIN, SCLPIN)
+  Wire.begin(SDAPIN, SCLPIN);
 
   pref.begin("mesh", true);
   // mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
@@ -369,16 +388,71 @@ void setup() {
     // Start Bluetooth if no mesh credentials
     bluetoothAdvertise();
   }
-
-  
 }
+
+// =====================================================
+//                      I2C LOGIC
+// =====================================================
+bool deviceExists(uint8_t address) {
+  Wire.beginTransmission(address);
+  return (Wire.endTransmission() == 0);
+}
+
+void readAM2320() {
+  // Wake up
+  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
+  Wire.endTransmission();
+
+  // Send read command
+  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
+  Wire.write(0x03);
+  Wire.write(0x00);
+  Wire.write(0x04);
+  Wire.endTransmission();
+
+  // Read 8 bytes
+  Wire.requestFrom(TEMPERATURE_SENSOR_ADDRESS, 8);
+  if (Wire.available() == 8) {
+    uint8_t data[8];
+    for (int i = 0; i < 8; i++) data[i] = Wire.read();
+
+    uint16_t humidity = (data[2] << 8) | data[3];
+    uint16_t temperature = (data[4] << 8) | data[5];
+
+    Serial.print("Temp: ");
+    Serial.print(temperature / 10.0);
+    Serial.print(" °C, Humidity: ");
+    Serial.print(humidity / 10.0);
+    Serial.println(" %");
+  } else {
+    Serial.println("Failed to read AM2320");
+  }
+}
+
+void readBH1750() {
+  // Request 2 bytes from the sensor
+  Wire.requestFrom(LIGHT_SENSOR_ADDRESS, 2);
+  
+  if (Wire.available() == 2) {
+    uint16_t level = Wire.read() << 8 | Wire.read();  // Combine high and low bytes
+    float lux = level / 1.2;  // Convert to lux
+    Serial.print("Light: ");
+    Serial.print(lux);
+    Serial.println(" lx");
+  } else {
+    Serial.println("Failed to read BH1750");
+  }
+}
+
 
 // =====================================================
 //                  LOOP FUNCTION
 // =====================================================
 
+uint64_t lastTime2 = 0;
 long long start_unpairing = 0;
 bool info = false;
+bool BH1750connected = false;
 void loop() {
 
   if (mesh_init) {
@@ -411,6 +485,10 @@ void loop() {
       pref.remove("mesh_port");
       pref.end();
 
+      pref.begin("gpio_mode", false);
+      pref.remove("gpio_mode");
+      pref.end();
+
       Serial.println("Disconnected from mesh network.\nRebooting...");
       ESP.restart();
     }
@@ -423,5 +501,26 @@ void loop() {
   // GPIO
   triggerStateUpdate();
 
+  if (millis() - lastTime2 >= 2000) {
+  // I2C
+    lastTime2 = millis();
+    if (deviceExists(TEMPERATURE_SENSOR_ADDRESS)) {
+      readAM2320();
+    }
+
+    if (deviceExists(LIGHT_SENSOR_ADDRESS)) {
+
+      if (!BH1750connected) {
+        Wire.beginTransmission(LIGHT_SENSOR_ADDRESS);
+        Wire.write(0x10);       // Continuous high-res mode
+        Wire.endTransmission();
+      }
+
+      BH1750connected = true;
+      readBH1750();
+    } else {
+      BH1750connected = false;
+    }
+  }
 }
 

@@ -12,7 +12,7 @@ void meshSend(uint32_t mesh_id, const char *cmd, String text);
 void bluetoothAdvertise();
 
 painlessMesh mesh;
-Preferences preferences;
+Preferences pref;
 static NimBLEServer* pServer;
 
 bool mesh_init = false;
@@ -44,11 +44,11 @@ class GatewayCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.println(value.c_str());
 
     uint32_t cast = static_cast<uint32_t>(std::stoul(value));
-    preferences.begin("mesh", false);
-    preferences.putUInt("mesh_gateway", cast);
-    uint32_t debug = preferences.getUInt("mesh_gateway", 0);
+    pref.begin("mesh", false);
+    pref.putUInt("mesh_gateway", cast);
+    uint32_t debug = pref.getUInt("mesh_gateway", 0);
     Serial.println(String(debug));
-    preferences.end();
+    pref.end();
     mesh_gateway = cast;
   }
 };
@@ -59,9 +59,9 @@ class MeshSSIDCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.print("Received SSID: ");
     Serial.println(value.c_str());
 
-    preferences.begin("mesh", false);
-    preferences.putString("mesh_ssid", String(value.c_str()));
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putString("mesh_ssid", String(value.c_str()));
+    pref.end();
     mesh_ssid = String(value.c_str());
   }
 };
@@ -72,9 +72,9 @@ class MeshPasswordCharacteristicCallback : public NimBLECharacteristicCallbacks 
     Serial.print("Received Password: ");
     Serial.println(value.c_str());
 
-    preferences.begin("mesh", false);
-    preferences.putString("mesh_password", String(value.c_str()));
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putString("mesh_password", String(value.c_str()));
+    pref.end();
     mesh_password = String(value.c_str());
   }
 };
@@ -86,9 +86,9 @@ class MeshPortCharacteristicCallback : public NimBLECharacteristicCallbacks {
     Serial.println(value.c_str());
 
     uint16_t cast = static_cast<uint16_t>(std::stoul(value));
-    preferences.begin("mesh", false);
-    preferences.putUInt("mesh_port", cast);
-    preferences.end();
+    pref.begin("mesh", false);
+    pref.putUInt("mesh_port", cast);
+    pref.end();
     mesh_port = cast;
 
     if (!mesh_ssid.isEmpty() && !mesh_password.isEmpty() && mesh_gateway != 0) {
@@ -140,6 +140,10 @@ void bluetoothAdvertise() {
 //                     MESH LOGIC
 // =====================================================
 
+void sendStateUpdate() {
+  meshSend(mesh_gateway, "state_update", String("{\"r1\":")+String(r1 ? "true" : "false")+",\"r2\":"+String(r2 ? "true" : "false")+"}");
+}
+
 bool unpairing = false;
 
 void meshCallback(uint32_t from, String &msg) {
@@ -160,7 +164,7 @@ void meshCallback(uint32_t from, String &msg) {
 
     }
 
-    if (cmd == "update_state" || cmd == "state_response") {
+    else if (cmd == "update_state" || cmd == "state_response") {
 
       DynamicJsonDocument state(512);
       DeserializationError error = deserializeJson(state, payload);
@@ -177,6 +181,10 @@ void meshCallback(uint32_t from, String &msg) {
 
       if (cmd == "update_state") meshSend(mesh_gateway, "update_state_response", "OK");
     }
+
+    else if (cmd == "get_state") {
+      sendStateUpdate();
+    }
   }
 }
 
@@ -192,10 +200,11 @@ void sendMeshNodeInfo(uint32_t node_id, bool pair_res) {
   String json = "{\"mac_address\":\""+String(WiFi.macAddress())+"\",\"node_id\": " + String(mesh.getNodeId()) + ",\"node_type\": \"relay\"}";
   if (pair_res) {
     meshSend(mesh_gateway, "pair_res_info", json.c_str());
+    sendStateUpdate();
   } else {
     meshSend(mesh_gateway, "node_info", json.c_str());
+    sendStateUpdate();
   }
-  
 }
 
 void requestForState() {
@@ -218,17 +227,17 @@ void setup() {
   pinMode(8, OUTPUT);
   digitalWrite(BUILTIN_LED, HIGH);
 
-  preferences.begin("mesh", true);
+  pref.begin("mesh", true);
   // mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
   mesh.onReceive(&meshCallback);
   mesh.setContainsRoot(true);
 
-  mesh_gateway = preferences.getUInt("mesh_gateway", 0);
-  mesh_ssid = preferences.getString("mesh_ssid", "");
-  mesh_password = preferences.getString("mesh_password", "");
-  mesh_port = preferences.getUInt("mesh_port", 0);
+  mesh_gateway = pref.getUInt("mesh_gateway", 0);
+  mesh_ssid = pref.getString("mesh_ssid", "");
+  mesh_password = pref.getString("mesh_password", "");
+  mesh_port = pref.getUInt("mesh_port", 0);
 
-  preferences.end();
+  pref.end();
 
   if (mesh_gateway != 0 && !mesh_ssid.isEmpty() && !mesh_password.isEmpty() && mesh_port != 0) {
 
@@ -286,12 +295,12 @@ void loop() {
       mesh_port = 0;
       mesh.stop();
 
-      preferences.begin("mesh", false);
-      preferences.remove("mesh_gateway");
-      preferences.remove("mesh_ssid");
-      preferences.remove("mesh_password");
-      preferences.remove("mesh_port");
-      preferences.end();
+      pref.begin("mesh", false);
+      pref.remove("mesh_gateway");
+      pref.remove("mesh_ssid");
+      pref.remove("mesh_password");
+      pref.remove("mesh_port");
+      pref.end();
 
       Serial.println("Disconnected from mesh network.\nRebooting...");
       ESP.restart();

@@ -28,7 +28,7 @@
 #define TOPIC_STATE_UPDATE_RESPONSE   "res/state/update"
 #define TOPIC_STATE_GET_REQUEST       "req/state/get"
 #define TOPIC_STATE_GET_RESPONSE      "res/state/get"
-#define TOPIC_MODE_UPDATE_REQUEST    "req/mode/update"
+#define TOPIC_MODE_UPDATE_REQUEST     "req/mode/update"
 #define TOPIC_MODE_UPDATE_RESPONSE    "res/mode/update"
 
 #define EEPROM_SIZE 50
@@ -91,7 +91,7 @@ void setup() {
     mqtt_server[39] = '\0';
   }
 
-  sprintf(mqtt_server, "%s", "192.168.1.142");
+  sprintf(mqtt_server, "%s", "192.168.1.150");
 
   if (strlen(mqtt_server) == 0) {
     wm.resetSettings();  // force config portal if no data

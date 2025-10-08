@@ -46,6 +46,7 @@ std::map<uint32_t, std::string> nodeStateMap;
 painlessMesh mesh;
 int countTimes = 0;
 bool is_pairing = false;
+NimBLEClient *pClient = NimBLEDevice::createClient();
 
 // =====================================================
 //                     BLE LOGIC
@@ -264,26 +265,37 @@ void handleSerialCallback(SerialMessage &msg) {
   else if (strcmp(msg.command, "req/pair") == 0) {
     // Safely build string from payload
 
-    std::string mac(reinterpret_cast<char*>(msg.payload), msg.length);
+
+
+    std::string mac(msg.length, '\0');
+    memcpy(mac.data(), msg.payload, msg.length);
+
 
     // Find node safely (don’t use operator[] directly)
     auto it = foundNodes.find(mac);
+
     if (it == foundNodes.end()) {
-      String res = String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"node not found\"}";
+
+      String res = String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"failed to connect to node.\"}";
       sendSerial("res/pair", res.c_str());
       return;
     }
 
+
     MeshNode &node = it->second;
-    NimBLEClient *pClient = NimBLEDevice::createClient();
+
+
 
     if (!node.device.getAddress().toString().empty() && !is_pairing) {
+
       is_pairing = true;
       if (pClient->connect(node.device)) {
+
         NimBLEUUID serviceID("c220cb58-0d9f-4405-a55a-da4794291e8f");
         NimBLERemoteService *pService = pClient->getService(serviceID);
 
         if (pService != nullptr) {
+
           auto gatewayCharacteristic = pService->getCharacteristic("46f42176-8d03-4241-843d-195aea0ea390");
           auto meshSSIDCharacteristic = pService->getCharacteristic("98da85e8-42d6-493f-8bff-5416b686f1d2");
           auto meshPasswordCharacteristic = pService->getCharacteristic("207cd133-188a-4503-8a94-17c6070aadce");
@@ -297,10 +309,10 @@ void handleSerialCallback(SerialMessage &msg) {
             meshPasswordCharacteristic->writeValue(MESH_PASSWORD);
           if (meshPortCharacteristic && meshPortCharacteristic->canWrite())
             meshPortCharacteristic->writeValue(String(MESH_PORT).c_str());
-
           sendSerial("res/pair", (String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"pairing to new node.\"}").c_str());
         } else {
           sendSerial("res/pair", (String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"failed to connect to node.\"}").c_str());
+        
         }
 
         pClient->disconnect();
@@ -494,6 +506,7 @@ void meshCallback(uint32_t from, String &msg) {
           String pair_res;
           serializeJson(nodeJson, pair_res);
 
+          pClient->end();
           is_pairing = false;
           foundNodes.erase(mac_address.c_str());
           sendSerial("mesh/node/info", pair_res.c_str());
@@ -578,6 +591,7 @@ void setup() {
 //                  LOOP FUNCTION
 // =====================================================
 
+uint64_t lastTime = 0;
 void loop() {
 
   mesh.update();
@@ -586,4 +600,15 @@ void loop() {
 
   SerialMessage msg = receiveSerialMessage();
   if (msg.valid) handleSerialCallback(msg);
+
+  if (millis() - lastTime >= 1000) {
+    lastTime = millis();
+    // Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+
+    for (uint32_t nodeId : mesh.getNodeList()) {
+      if (nodeStateMap.find(nodeId) == nodeStateMap.end()) {
+        meshSend(nodeId, "get_state", "");
+      }
+    }
+  }
 }
