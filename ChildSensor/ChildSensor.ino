@@ -32,9 +32,17 @@ bool first_init = false;
 std::map<std::string, bool> gpioStateMap;
 DynamicJsonDocument gpioMode(256);
 uint64_t lastTime = 0;
+uint64_t lastTime2 = 0;
+bool temperatureSensorConnected = false;
+bool lightSensorConnected = false;
+
 bool gpio0 = false;
 bool gpio1 = false;
 bool gpio3 = false;
+
+float temperature = 0.0;
+float humidity = 0.0;
+float lux = 0.0;
 
 // =====================================================
 //                   BLE LOGIC
@@ -152,7 +160,29 @@ void bluetoothAdvertise() {
 // =====================================================
 
 void sendStateUpdate() {
-  meshSend(mesh_gateway, "state_update", String("{\"gpio\":{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}}");
+
+  bool tempSensorExists = deviceExists(TEMPERATURE_SENSOR_ADDRESS);
+  bool lightSensorExists = deviceExists(LIGHT_SENSOR_ADDRESS);
+
+  DynamicJsonDocument output(256);
+  DynamicJsonDocument gpio(128);
+  DynamicJsonDocument i2c(128);
+
+  gpio["gpio_0"] = gpio0;
+  gpio["gpio_1"] = gpio1;
+  gpio["gpio_3"] = gpio3;
+
+  if (tempSensorExists) i2c["temperature"] = temperature;
+  if (tempSensorExists) i2c["humidity"] = humidity;
+  if (lightSensorExists) i2c["light"] = lux;
+
+  output["gpio"] = gpio;
+  output["i2c"] = i2c;
+
+  String outputStr;
+  serializeJson(output, outputStr);
+
+  meshSend(mesh_gateway, "state_update", outputStr);
 }
 
 bool unpairing = false;
@@ -279,8 +309,74 @@ bool processGPIO(const String& mode, bool gp, const std::string& key) {
     return false;
 }
 
+// =====================================================
+//                      I2C LOGIC
+// =====================================================
+bool deviceExists(uint8_t address) {
+  Wire.beginTransmission(address);
+  return (Wire.endTransmission() == 0);
+}
+
+bool readAM2320() {
+
+  bool result = false;
+  // Wake up
+  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
+  Wire.endTransmission();
+
+  // Send read command
+  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
+  Wire.write(0x03);
+  Wire.write(0x00);
+  Wire.write(0x04);
+  Wire.endTransmission();
+
+  // Read 8 bytes
+  Wire.requestFrom(TEMPERATURE_SENSOR_ADDRESS, 8);
+  if (Wire.available() == 8) {
+    uint8_t data[8];
+    for (int i = 0; i < 8; i++) data[i] = Wire.read();
+
+    float h = ((data[2] << 8) | data[3]) / 10.0;
+    float t = ((data[4] << 8) | data[5]) / 10.0;
+
+    if (humidity != h || temperature != t) {
+      result = true;
+    }
+
+    humidity = h;
+    temperature = t;
+  }
+
+  return result;
+}
+
+bool readBH1750() {
+  bool result = false;
+  // Request 2 bytes from the sensor
+  Wire.requestFrom(LIGHT_SENSOR_ADDRESS, 2);
+  
+  if (Wire.available() == 2) {
+    uint16_t level = Wire.read() << 8 | Wire.read();
+    float l = level / 1.2;
+
+    if (lux != l) {
+      result = true;
+    }
+
+    lux = l;
+  }
+
+  return result;
+}
+
+// =====================================================
+//               SENSOR TRIGGER BEHAVIER
+// =====================================================
+
 void triggerStateUpdate() {
 
+  // GPIO
   if (millis() - lastTime >= 500) {
     lastTime = millis();
 
@@ -299,7 +395,50 @@ void triggerStateUpdate() {
     gpioStateMap["gpio3"] = gpio3;
 
     if (send) {
-      meshSend(mesh_gateway, "state_update", String("{\"gpio_0\":")+String(gpio0 ? "true" : "false")+",\"gpio_1\":"+String(gpio1 ? "true" : "false")+",\"gpio_3\":"+String(gpio3 ? "true" : "false")+"}");
+      sendStateUpdate();
+    }
+  }
+
+  // I2C
+  if (millis() - lastTime2 >= 2000) {
+    lastTime2 = millis();
+
+    bool send1 = false;
+    bool send2 = false;
+    bool send3 = false;
+
+    bool tempSensorExists = deviceExists(TEMPERATURE_SENSOR_ADDRESS);
+    bool lightSensorExists = deviceExists(LIGHT_SENSOR_ADDRESS);
+
+    if (tempSensorExists) {
+      send1 = readAM2320();
+      temperatureSensorConnected = true;
+    } else {
+      if (temperatureSensorConnected) {
+        send3 = true;
+      }
+      temperatureSensorConnected = false;
+    }
+
+    if (lightSensorExists) {
+
+      if (!lightSensorConnected) {
+        Wire.beginTransmission(LIGHT_SENSOR_ADDRESS);
+        Wire.write(0x10);       // Continuous high-res mode
+        Wire.endTransmission();
+      }
+
+      lightSensorConnected = true;
+      send2 = readBH1750();
+    } else {
+      if (lightSensorConnected) {
+        send3 = true;
+      }
+      lightSensorConnected = false;
+    }
+
+    if (send1 || send2 || send3) {
+      sendStateUpdate();
     }
   }
 }
@@ -391,68 +530,11 @@ void setup() {
 }
 
 // =====================================================
-//                      I2C LOGIC
-// =====================================================
-bool deviceExists(uint8_t address) {
-  Wire.beginTransmission(address);
-  return (Wire.endTransmission() == 0);
-}
-
-void readAM2320() {
-  // Wake up
-  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
-  Wire.endTransmission();
-
-  // Send read command
-  Wire.beginTransmission(TEMPERATURE_SENSOR_ADDRESS);
-  Wire.write(0x03);
-  Wire.write(0x00);
-  Wire.write(0x04);
-  Wire.endTransmission();
-
-  // Read 8 bytes
-  Wire.requestFrom(TEMPERATURE_SENSOR_ADDRESS, 8);
-  if (Wire.available() == 8) {
-    uint8_t data[8];
-    for (int i = 0; i < 8; i++) data[i] = Wire.read();
-
-    uint16_t humidity = (data[2] << 8) | data[3];
-    uint16_t temperature = (data[4] << 8) | data[5];
-
-    Serial.print("Temp: ");
-    Serial.print(temperature / 10.0);
-    Serial.print(" °C, Humidity: ");
-    Serial.print(humidity / 10.0);
-    Serial.println(" %");
-  } else {
-    Serial.println("Failed to read AM2320");
-  }
-}
-
-void readBH1750() {
-  // Request 2 bytes from the sensor
-  Wire.requestFrom(LIGHT_SENSOR_ADDRESS, 2);
-  
-  if (Wire.available() == 2) {
-    uint16_t level = Wire.read() << 8 | Wire.read();  // Combine high and low bytes
-    float lux = level / 1.2;  // Convert to lux
-    Serial.print("Light: ");
-    Serial.print(lux);
-    Serial.println(" lx");
-  } else {
-    Serial.println("Failed to read BH1750");
-  }
-}
-
-
-// =====================================================
 //                  LOOP FUNCTION
 // =====================================================
 
-uint64_t lastTime2 = 0;
 long long start_unpairing = 0;
 bool info = false;
-bool BH1750connected = false;
 void loop() {
 
   if (mesh_init) {
@@ -497,30 +579,6 @@ void loop() {
   }
 
   // Sensor Detect Logic
-
-  // GPIO
   triggerStateUpdate();
-
-  if (millis() - lastTime2 >= 2000) {
-  // I2C
-    lastTime2 = millis();
-    if (deviceExists(TEMPERATURE_SENSOR_ADDRESS)) {
-      readAM2320();
-    }
-
-    if (deviceExists(LIGHT_SENSOR_ADDRESS)) {
-
-      if (!BH1750connected) {
-        Wire.beginTransmission(LIGHT_SENSOR_ADDRESS);
-        Wire.write(0x10);       // Continuous high-res mode
-        Wire.endTransmission();
-      }
-
-      BH1750connected = true;
-      readBH1750();
-    } else {
-      BH1750connected = false;
-    }
-  }
 }
 
