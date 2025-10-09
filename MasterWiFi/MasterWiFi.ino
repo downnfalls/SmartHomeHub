@@ -36,6 +36,7 @@
 #define TOPIC_CONFIGURATION_REMOVE_RESPONSE "res/config/remove"
 #define TOPIC_CONFIGURATION_GET_REQUEST     "req/config/get"
 #define TOPIC_CONFIGURATION_GET_RESPONSE    "res/config/get"
+#define TOPIC_STATE_AUTO_UPDATE       "res/state/auto_update"
 
 #define EEPROM_SIZE 50
 
@@ -465,5 +466,10 @@ void serialCallback(SerialMessage &msg) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_CONFIGURATION_REMOVE_RESPONSE, message.c_str());
+  }
+  else if (strcmp(msg.command, "state/auto_update") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_STATE_AUTO_UPDATE, message.c_str());
   }
 }
