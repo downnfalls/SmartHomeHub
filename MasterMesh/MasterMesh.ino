@@ -57,15 +57,11 @@ std::map<uint32_t, std::set<uint32_t>> relayTriggerer;
 // =====================================================
 
 class ScanCallbacks : public NimBLEScanCallbacks {
+
+  // Scan Blue
   void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
     
     if (advertisedDevice->isAdvertisingService(NimBLEUUID("c220cb58-0d9f-4405-a55a-da4794291e8f"))) {
-      
-      //Serial.printf("Advertised Device found: %s\n", advertisedDevice->toString().c_str());
-      //Serial.printf("%s\n", advertisedDevice->getAddress().toString().c_str());
-
-      // Serial.print("Found target node: ");
-      // Serial.println(advertisedDevice->getAddress().toString().c_str());
 
       // ----- Check of duplicate node -----
       NimBLEAdvertisedDevice device = *advertisedDevice;
@@ -89,6 +85,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
         payloadSize += 1 + entry.second.display_name.size();     // name length + name string
     }
 
+    // encode data to send to uart
     std::vector<uint8_t> payload(payloadSize);
     uint8_t *ptr = payload.data();
 
@@ -111,6 +108,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 
     sendSerial("res/scan", payload.data(), payload.size());
 
+    // rescan if not reach scan limit yet
     if (countTimes <= BLE_SCAN_COUNT) {
       countTimes++;
       NimBLEDevice::getScan()->start(BLE_SCAN_TIME, false, true);
@@ -122,6 +120,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 //                     UART LOGIC
 // =====================================================
 
+// Decoding UART Serial to SerialMessage
 SerialMessage receiveSerialMessage() {
     static enum { WAIT_START, WAIT_CMD, WAIT_PAYLOAD, WAIT_END } state = WAIT_START;
     static SerialMessage msg;
@@ -131,48 +130,43 @@ SerialMessage receiveSerialMessage() {
     while (Serial2.available()) {
       uint8_t byte = Serial2.read();
 
-      // Serial.print((char) byte);
-
-      // Serial.println();
-
       switch (state) {
         case WAIT_START:
-          if (byte == 0x00) {
-              state = WAIT_CMD;
-              cmdIndex = 0;
-              payloadIndex = 0;
-              msg.length = 0;
-              msg.valid = false;
+          if (byte == 0x00) { // start bit = 0x00
+              state = WAIT_CMD; // go to next state
+              cmdIndex = 0; // starting index of command field
+              payloadIndex = 0; // starting index of payload field
+              msg.length = 0; // count message length from 0
+              msg.valid = false; // initial as invalid first
           }
           break;
 
         case WAIT_CMD:
-          msg.command[cmdIndex++] = byte;
-          if (cmdIndex == 16) {
+          msg.command[cmdIndex++] = byte; // read each byte and store to command field / count up index of command field
+          if (cmdIndex == 16) { // limit command field at 16 byte
               msg.command[16] = '\0';  // Null-terminate
-              state = WAIT_PAYLOAD;
+              state = WAIT_PAYLOAD; // if reach 16 byte -> go to next state
           }
           break;
 
         case WAIT_PAYLOAD:
-          if (byte == 0xFF) {  // No payload
+          if (byte == 0xFF) {  // same as command field but no limit
               msg.valid = true;
               state = WAIT_START;
               return msg;
           } else {
               msg.payload[payloadIndex++] = byte;
               msg.length = payloadIndex;
-              state = WAIT_END;
+              state = WAIT_END; // go to next state
           }
           break;
 
         case WAIT_END:
-          if (byte == 0xFF) {
+          if (byte == 0xFF) { // stop bit is 0xFF if found -> message end
               msg.valid = true;
               state = WAIT_START;
               return msg;
           } else {
-              // keep collecting until end marker
               msg.payload[payloadIndex++] = byte;
               msg.length = payloadIndex;
           }
@@ -180,7 +174,7 @@ SerialMessage receiveSerialMessage() {
       }
     }
 
-    return SerialMessage{"", {}, 0, false};
+    return SerialMessage{"", {}, 0, false}; // null message if error
 }
 
 void sendSerial(const char cmd[16], uint8_t *payload, unsigned int length) {
@@ -205,7 +199,6 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
         memcpy(&payload[i * 4], &value, 4);  // copy 4 bytes
     }
 
-    // Replace this with your actual sending function
     sendSerial(cmd, payload, payloadSize);
 }
 
@@ -702,17 +695,19 @@ int checkCondition(uint32_t sensorId, String condition) {
     return -1;
   } else {
     if (state.containsKey("i2c")) {
-      float value = state["i2c"][left];
-      if (op == ">") {
-        return value > right.toFloat();
-      } else if (op == "<") {
-        return value < right.toFloat();
-      } else if (op == ">=") {
-        return value >= right.toFloat();
-      } else if (op == "<=") {
-        return value <= right.toFloat();
-      } else if (op == "=") {
-        return value == right.toFloat();
+      if (state["i2c"].containsKey(left)) {
+        float value = state["i2c"][left];
+        if (op == ">") {
+          return value > right.toFloat();
+        } else if (op == "<") {
+          return value < right.toFloat();
+        } else if (op == ">=") {
+          return value >= right.toFloat();
+        } else if (op == "<=") {
+          return value <= right.toFloat();
+        } else if (op == "=") {
+          return value == right.toFloat();
+        } else return -1;
       } else return -1;
     } else return -1;
   }
