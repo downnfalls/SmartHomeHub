@@ -467,7 +467,7 @@ void serialCallback(SerialMessage &msg) {
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_CONFIGURATION_REMOVE_RESPONSE, message.c_str());
   }
-  else if (strcmp(msg.command, "state/auto_update") == 0) {
+  else if (strcmp(msg.command, "auto_update") == 0) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_STATE_AUTO_UPDATE, message.c_str());

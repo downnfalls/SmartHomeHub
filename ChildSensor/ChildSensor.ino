@@ -15,8 +15,8 @@
 #define TEMPERATURE_SENSOR_ADDRESS  0x5C
 #define LIGHT_SENSOR_ADDRESS        0x23
 
-#define GPIO_CHECK_INTERVAL 500
-#define I2C_CHECK_INTERVAL 2000
+#define GPIO_CHECK_INTERVAL 50
+#define I2C_CHECK_INTERVAL 3000
 
 void meshCallback(uint32_t from, String &msg);
 void meshSend(uint32_t mesh_id, const char *cmd, String text);

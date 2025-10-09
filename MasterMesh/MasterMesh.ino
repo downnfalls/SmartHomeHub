@@ -360,7 +360,7 @@ void serialCallback(SerialMessage &msg) {
     if (!error) {
       uint32_t nodeId = incoming["node_id"];
 
-      updateState(nodeId, incoming["state"], true, false);
+      updateState(nodeId, incoming["state"], true, false, false);
     }
   }
   
@@ -436,15 +436,11 @@ void serialCallback(SerialMessage &msg) {
             configuration[nodeId] = entry.value();
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
-            uint32_t sensorNode1 = entry["r1"]["node_id"];
-            uint32_t sensorNode2 = entry["r2"]["node_id"];
-
-            relayTriggerer[sensorNode1].insert(nodeId);
-            relayTriggerer[sensorNode2].insert(nodeId);
-
             pref.begin("configuration", false);
+            
             String configStr;
             serializeJson(configuration, configStr);
+            
             pref.putString("config", configStr);
             Serial.println(pref.getString("config").c_str());
             pref.end();
@@ -494,20 +490,33 @@ void serialCallback(SerialMessage &msg) {
 //                     STATE LOGIC
 // =====================================================
 
-void updateState(uint32_t node_id, JsonObject state, bool callback, bool sensor) {
+void updateState(uint32_t node_id, JsonObject state, bool callback, bool sensor, bool isAuto) {
+
+  String stateStr;
+  serializeJson(state, stateStr);
+
+  bool same = String(nodeStateMap[node_id].c_str()) == stateStr;
+  nodeStateMap[node_id] = stateStr.c_str();  // store serialized JSON
+
+  if (callback) {
+    if (isAuto) {
+      if (!same) {
+        meshSend(node_id, "update_state", stateStr);
+        String res = String("{\"node_id\":") + String(node_id) + ",\"state\":"+stateStr+"}";
+        sendSerial("auto_update", res.c_str());
+      }
+    } else {
+      meshSend(node_id, "update_state", stateStr);
+      String res = String("{\"node_id\":") + String(node_id) + ",\"info\":\"OK\"}";
+      sendSerial("res/state/update", res.c_str());
+    }
+  }
 
   if (sensor) {
     for (auto &relayID : relayTriggerer[node_id]) {
       triggerStateUpdate(relayID);
     }
   }
-
-  String stateStr;
-  serializeJson(state, stateStr);
-
-  nodeStateMap[node_id] = stateStr.c_str();  // store serialized JSON
-
-  if (callback) meshSend(node_id, "update_state", stateStr);
 }
 
 DynamicJsonDocument getState(uint32_t node_id) {
@@ -624,11 +633,6 @@ void meshCallback(uint32_t from, String &msg) {
     }
   }
 
-  else if (cmd == "update_state_response") {
-    String res = String("{\"node_id\":") + String(from) + ",\"info\":\"" + payload + "\"}";
-    sendSerial("res/state/update", res.c_str());
-  }
-
   else if (cmd == "update_mode_response") {
     String res = String("{\"node_id\":") + String(from) + ",\"info\":\"" + payload + "\"}";
     sendSerial("res/mode/update", res.c_str());
@@ -650,7 +654,7 @@ void meshCallback(uint32_t from, String &msg) {
     DeserializationError error = deserializeJson(state, payload);
     
     if (!error) {
-      updateState(from, state.as<JsonObject>(), false, cmd == "state_update_sensor");
+      updateState(from, state.as<JsonObject>(), false, cmd == "state_update_sensor", false);
     }
   }
 }
@@ -683,10 +687,10 @@ int checkCondition(uint32_t sensorId, String condition) {
     op = "|";
   }
 
-  int pos = data.indexOf(op);
+  int pos = condition.indexOf(op);
   if (pos != -1) {
-    left = data.substring(0, pos);
-    right = data.substring(pos + op.length());
+    left = condition.substring(0, pos);
+    right = condition.substring(pos + op.length());
   }
 
   DynamicJsonDocument state = getState(sensorId);
@@ -700,15 +704,15 @@ int checkCondition(uint32_t sensorId, String condition) {
     if (state.containsKey("i2c")) {
       float value = state["i2c"][left];
       if (op == ">") {
-        return value > right;
+        return value > right.toFloat();
       } else if (op == "<") {
-        return value < right;
+        return value < right.toFloat();
       } else if (op == ">=") {
-        return value >= right;
+        return value >= right.toFloat();
       } else if (op == "<=") {
-        return value <= right;
+        return value <= right.toFloat();
       } else if (op == "=") {
-        return value == right;
+        return value == right.toFloat();
       } else return -1;
     } else return -1;
   }
@@ -716,12 +720,16 @@ int checkCondition(uint32_t sensorId, String condition) {
 
 void triggerStateUpdate(uint32_t nodeId) {
   // r1
-  uint32_t sensorR1 = configuration[nodeId]["r1"]["node_id"];
-  String conditionR1 = String(configuration[nodeId]["r1"]["condition"].c_str());
+  uint32_t sensorR1 = configuration[String(nodeId)]["r1"]["node_id"];
+  String conditionR1 = configuration[String(nodeId)]["r1"]["condition"];
+
+  Serial.printf("condition r1 : %s\n", conditionR1.c_str());
   int result1 = checkCondition(sensorR1, conditionR1);
 
-  uint32_t sensorR2 = configuration[nodeId]["r2"]["node_id"];
-  String conditionR2 = String(configuration[nodeId]["r2"]["condition"].c_str());
+  uint32_t sensorR2 = configuration[String(nodeId)]["r2"]["node_id"];
+  String conditionR2 = configuration[String(nodeId)]["r2"]["condition"];
+
+  Serial.printf("condition r2 : %s\n", conditionR2.c_str());
   int result2 = checkCondition(sensorR2, conditionR2);
 
   DynamicJsonDocument state(256);
@@ -731,7 +739,11 @@ void triggerStateUpdate(uint32_t nodeId) {
   state["r1"] = result1 == -1 ? (oldState.containsKey("r1") ? oldState["r1"] : false) : (bool) result1;
   state["r2"] = result2 == -1 ? (oldState.containsKey("r2") ? oldState["r2"] : false) : (bool) result2;
 
-  updateState(nodeId, state.as<JsonObject>(), true, false);
+  String stateStr;
+  serializeJson(state, stateStr);
+  Serial.printf("State Triggered: %s\n", stateStr.c_str());
+
+  if (result1 != -1 || result2 != -1) updateState(nodeId, state.as<JsonObject>(), true, false, true);
 }
 
 // =====================================================
@@ -751,7 +763,16 @@ void setup() {
   pref.begin("configuration", true);
   String configStr = pref.isKey("config") ? pref.getString("config") : "{}";
   Serial.printf("config: %s\n", configStr.c_str());
-  deserializeJson(configuration, configStr);
+  DeserializationError error = deserializeJson(configuration, configStr);
+
+  if (!error) {
+    for (JsonPair pair : configuration.as<JsonObject>()) {
+      uint32_t relayId = strtoul(pair.key().c_str(), nullptr, 10);
+      relayTriggerer[pair.value()["r1"]["node_id"].as<uint32_t>()].insert(relayId);
+      relayTriggerer[pair.value()["r2"]["node_id"].as<uint32_t>()].insert(relayId);
+    }
+  }
+
   pref.end();
 
   // Searching for new node
