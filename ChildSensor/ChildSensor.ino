@@ -185,7 +185,7 @@ void sendStateUpdate() {
   String outputStr;
   serializeJson(output, outputStr);
 
-  meshSend(mesh_gateway, "state_update", outputStr);
+  meshSend(mesh_gateway, "state_update_sensor", outputStr);
 }
 
 bool unpairing = false;

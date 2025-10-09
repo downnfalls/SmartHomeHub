@@ -6,6 +6,7 @@
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <set>
 
 #define TX 17
 #define RX 16
@@ -39,6 +40,7 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list);
 SerialMessage receiveSerialMessage();
 void serialCallback(SerialMessage &msg);
 void meshSend(uint32_t mesh_id, const char* cmd, String text);
+void triggerStateUpdate(uint32_t nodeId);
 
 Preferences pref;
 std::map<std::string, MeshNode> foundNodes;
@@ -48,6 +50,7 @@ int countTimes = 0;
 bool is_pairing = false;
 NimBLEClient *pClient = NimBLEDevice::createClient();
 DynamicJsonDocument configuration(1024);
+std::map<uint32_t, std::set<uint32_t>> relayTriggerer;
 
 // =====================================================
 //                     BLE LOGIC
@@ -357,7 +360,7 @@ void serialCallback(SerialMessage &msg) {
     if (!error) {
       uint32_t nodeId = incoming["node_id"];
 
-      updateState(nodeId, incoming["state"], true);
+      updateState(nodeId, incoming["state"], true, false);
     }
   }
   
@@ -433,11 +436,15 @@ void serialCallback(SerialMessage &msg) {
             configuration[nodeId] = entry.value();
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+            uint32_t sensorNode1 = entry["r1"]["node_id"];
+            uint32_t sensorNode2 = entry["r2"]["node_id"];
+
+            relayTriggerer[sensorNode1].insert(nodeId);
+            relayTriggerer[sensorNode2].insert(nodeId);
+
             pref.begin("configuration", false);
-            
             String configStr;
             serializeJson(configuration, configStr);
-            
             pref.putString("config", configStr);
             Serial.println(pref.getString("config").c_str());
             pref.end();
@@ -469,6 +476,10 @@ void serialCallback(SerialMessage &msg) {
     configuration.remove(message);
     sendSerial("res/config/rem", ("{\"node_id\":"+String(message.c_str())+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+    for (auto &entry : relayTriggerer) {
+      entry.second.erase(entry.first);
+    }
+
     pref.begin("configuration", false);
     
     String configStr;
@@ -483,7 +494,14 @@ void serialCallback(SerialMessage &msg) {
 //                     STATE LOGIC
 // =====================================================
 
-void updateState(uint32_t node_id, JsonObject state, bool callback) {
+void updateState(uint32_t node_id, JsonObject state, bool callback, bool sensor) {
+
+  if (sensor) {
+    for (auto &relayID : relayTriggerer[node_id]) {
+      triggerStateUpdate(relayID);
+    }
+  }
+
   String stateStr;
   serializeJson(state, stateStr);
 
@@ -497,14 +515,12 @@ DynamicJsonDocument getState(uint32_t node_id) {
 
   auto it = nodeStateMap.find(node_id);
   if (it == nodeStateMap.end()) {
-    // return empty JSON {}
     output.to<JsonObject>();
     return output;
   }
 
   DeserializationError error = deserializeJson(output, it->second);
   if (error) {
-    // return empty JSON {}
     output.to<JsonObject>();
   }
   return output;
@@ -546,6 +562,10 @@ void meshCallback(uint32_t from, String &msg) {
     pref.end();
 
     configuration.remove(String(from));
+
+    for (auto &entry : relayTriggerer) {
+      entry.second.erase(entry.first);
+    }
 
     pref.begin("configuration", false);
     
@@ -624,13 +644,13 @@ void meshCallback(uint32_t from, String &msg) {
     meshSend(from, "state_response", stateStr);
   }
 
-  else if (cmd == "state_update") {
+  else if (cmd == "state_update_sensor" || cmd == "state_update_relay") {
 
     DynamicJsonDocument state(512);
     DeserializationError error = deserializeJson(state, payload);
     
     if (!error) {
-      updateState(from, state.as<JsonObject>(), false);
+      updateState(from, state.as<JsonObject>(), false, cmd == "state_update_sensor");
     }
   }
 }
@@ -641,6 +661,77 @@ void meshSend(uint32_t mesh_id, const char *cmd, String text) {
 
   mesh.sendSingle(mesh_id, output.c_str());
   
+}
+
+// =====================================================
+//                 AUTOMATION LOGIC
+// =====================================================
+
+int checkCondition(uint32_t sensorId, String condition) {
+  String left, right, op;
+  if (condition.indexOf(">=") != -1) {
+    op = ">=";
+  } else if (condition.indexOf("<=") != -1) {
+    op = "<=";
+  } else if (condition.indexOf(">") != -1) {
+    op = ">";
+  } else if (condition.indexOf("<") != -1) {
+    op = "<";
+  } else if (condition.indexOf("=") != -1) {
+    op = "=";
+  } else if (condition.indexOf("|") != -1) {
+    op = "|";
+  }
+
+  int pos = data.indexOf(op);
+  if (pos != -1) {
+    left = data.substring(0, pos);
+    right = data.substring(pos + op.length());
+  }
+
+  DynamicJsonDocument state = getState(sensorId);
+  if (op == "|") {
+    if (state.containsKey("gpio")) {
+      bool value = state["gpio"][left];
+      return value == right.equalsIgnoreCase("true");
+    }
+    return -1;
+  } else {
+    if (state.containsKey("i2c")) {
+      float value = state["i2c"][left];
+      if (op == ">") {
+        return value > right;
+      } else if (op == "<") {
+        return value < right;
+      } else if (op == ">=") {
+        return value >= right;
+      } else if (op == "<=") {
+        return value <= right;
+      } else if (op == "=") {
+        return value == right;
+      } else return -1;
+    } else return -1;
+  }
+}
+
+void triggerStateUpdate(uint32_t nodeId) {
+  // r1
+  uint32_t sensorR1 = configuration[nodeId]["r1"]["node_id"];
+  String conditionR1 = String(configuration[nodeId]["r1"]["condition"].c_str());
+  int result1 = checkCondition(sensorR1, conditionR1);
+
+  uint32_t sensorR2 = configuration[nodeId]["r2"]["node_id"];
+  String conditionR2 = String(configuration[nodeId]["r2"]["condition"].c_str());
+  int result2 = checkCondition(sensorR2, conditionR2);
+
+  DynamicJsonDocument state(256);
+
+  DynamicJsonDocument oldState = getState(nodeId);
+
+  state["r1"] = result1 == -1 ? (oldState.containsKey("r1") ? oldState["r1"] : false) : (bool) result1;
+  state["r2"] = result2 == -1 ? (oldState.containsKey("r2") ? oldState["r2"] : false) : (bool) result2;
+
+  updateState(nodeId, state.as<JsonObject>(), true, false);
 }
 
 // =====================================================

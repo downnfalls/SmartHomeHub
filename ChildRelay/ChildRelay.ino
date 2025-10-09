@@ -141,7 +141,7 @@ void bluetoothAdvertise() {
 // =====================================================
 
 void sendStateUpdate() {
-  meshSend(mesh_gateway, "state_update", String("{\"r1\":")+String(r1 ? "true" : "false")+",\"r2\":"+String(r2 ? "true" : "false")+"}");
+  meshSend(mesh_gateway, "state_update_relay", String("{\"r1\":")+String(r1 ? "true" : "false")+",\"r2\":"+String(r2 ? "true" : "false")+"}");
 }
 
 bool unpairing = false;
