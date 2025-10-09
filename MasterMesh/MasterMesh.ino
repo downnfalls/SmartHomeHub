@@ -1,38 +1,62 @@
-#include "painlessMesh.h"
-#include <WiFi.h>
-#include <vector>
-#include <map>
-#include <algorithm>
-#include <NimBLEDevice.h>
-#include <Preferences.h>
-#include <ArduinoJson.h>
-#include <set>
+// =================================================================================
+//                             HEADER & INCLUDES
+// =================================================================================
+#include "painlessMesh.h"      // Manages the Wi-Fi mesh network communication.
+#include <WiFi.h>              // Required by painlessMesh for Wi-Fi functionality.
+#include <vector>              // Standard C++ vector for dynamic arrays.
+#include <map>                 // Standard C++ map for key-value pair storage.
+#include <algorithm>           // For algorithms like std::find.
+#include <NimBLEDevice.h>      // A memory-efficient library for Bluetooth Low Energy (BLE) functionality.
+#include <Preferences.h>       // For storing data persistently in the ESP32's non-volatile storage (NVS).
+#include <ArduinoJson.h>       // For parsing and serializing JSON data, used heavily for data exchange.
+#include <set>                 // Standard C++ set for storing unique elements (used in automation).
 
+// =================================================================================
+//                            DEFINITIONS & CONSTANTS
+// =================================================================================
+
+// Define the GPIO pins for the second UART interface (Serial2), used to communicate with the host controller (e.g., an ESP8266).
 #define TX 17
 #define RX 16
 
-#define MESH_PREFIX     "MeshHome"
-#define MESH_PASSWORD   "2147483647"
-#define MESH_PORT       5555
+// Mesh Network Credentials
+#define MESH_PREFIX     "MeshHome"     // Name of the mesh network.
+#define MESH_PASSWORD   "2147483647"   // Password for the mesh network.
+#define MESH_PORT       5555           // Port for mesh communication.
 
-#define BLE_SCAN_INTERVAL 100
-#define BLE_SCAN_PERIOD   100
-#define BLE_SCAN_TIME     5000
-#define BLE_SCAN_COUNT    2
+// BLE Scanning Parameters
+#define BLE_SCAN_INTERVAL 100 // How often to start a scan (in ms).
+#define BLE_SCAN_PERIOD   100 // How long to listen during each interval (in ms).
+#define BLE_SCAN_TIME     5000  // Total duration of a single scan cycle (in ms).
+#define BLE_SCAN_COUNT    2     // Number of times to repeat the scan cycle before stopping.
 
+// =================================================================================
+//                                  DATA STRUCTURES
+// =================================================================================
+
+/**
+ * @brief Defines the structure for a custom serial communication protocol.
+ * This ensures messages are framed correctly between this gateway and the host controller.
+ */
 struct SerialMessage {
-  char command[17];
-  uint8_t payload[1024];
-  unsigned int length;
-  bool valid;
+  char command[17];            // 16-byte command string, null-terminated.
+  uint8_t payload[1024];       // Buffer for the message data.
+  unsigned int length;         // Length of the payload.
+  bool valid;                  // Flag to indicate if the message was received correctly.
 };
 
+/**
+ * @brief Stores information about a discovered BLE device before it's paired.
+ */
 struct MeshNode {
-  NimBLEAdvertisedDevice device;
-  std::string mac_address;
-  std::string display_name;
+  NimBLEAdvertisedDevice device; // The advertised device object from the NimBLE library.
+  std::string mac_address;       // The device's MAC address.
+  std::string display_name;      // The device's advertised name.
 };
 
+// =================================================================================
+//                             FUNCTION PROTOTYPES
+// =================================================================================
 void meshCallback(uint32_t from, String &msg);
 void sendSerial(const char cmd[16], uint8_t *payload, unsigned int length);
 void sendSerial(const char cmd[16], const char *text);
@@ -42,57 +66,74 @@ void serialCallback(SerialMessage &msg);
 void meshSend(uint32_t mesh_id, const char* cmd, String text);
 void triggerStateUpdate(uint32_t nodeId);
 
-Preferences pref;
-std::map<std::string, MeshNode> foundNodes;
-std::map<uint32_t, std::string> nodeStateMap;
-painlessMesh mesh;
-int countTimes = 0;
-bool is_pairing = false;
-NimBLEClient *pClient = NimBLEDevice::createClient();
-DynamicJsonDocument configuration(1024);
-std::map<uint32_t, std::set<uint32_t>> relayTriggerer;
+// =================================================================================
+//                               GLOBAL VARIABLES
+// =================================================================================
+Preferences pref;                                        // Object to interact with persistent storage.
+std::map<std::string, MeshNode> foundNodes;              // Temporarily stores BLE devices found during a scan, keyed by MAC address.
+std::map<uint32_t, std::string> nodeStateMap;            // Caches the last known state of each mesh node (as a serialized JSON string), keyed by mesh node ID.
+painlessMesh mesh;                                       // The main object for managing the mesh network.
+int countTimes = 0;                                      // Counter for BLE scan cycles.
+bool is_pairing = false;                                 // A flag to prevent multiple simultaneous pairing attempts.
+NimBLEClient *pClient = NimBLEDevice::createClient();    // The BLE client object used to connect to peripheral devices.
+DynamicJsonDocument configuration(1024);                 // A JSON document to hold the automation configuration rules.
+std::map<uint32_t, std::set<uint32_t>> relayTriggerer;   // An optimized lookup map for automation. Key: sensor node ID, Value: set of relay node IDs triggered by this sensor.
 
-// =====================================================
-//                     BLE LOGIC
-// =====================================================
+// =================================================================================
+//                                  BLE LOGIC
+// =================================================================================
 
+/**
+ * @brief A callback class that defines actions to take during a BLE scan.
+ */
 class ScanCallbacks : public NimBLEScanCallbacks {
 
-  // Scan Blue
+  /**
+   * @brief Called for each BLE device found during the scan.
+   * @param advertisedDevice Pointer to the device that was found.
+   */
   void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
     
+    // Check if the device is advertising our specific service UUID, identifying it as a potential node for our system.
     if (advertisedDevice->isAdvertisingService(NimBLEUUID("c220cb58-0d9f-4405-a55a-da4794291e8f"))) {
 
-      // ----- Check of duplicate node -----
-      NimBLEAdvertisedDevice device = *advertisedDevice;
+      // Extract the MAC address from the manufacturer data.
       std::string addr = advertisedDevice->getManufacturerData();
+
+      // Check if this device has already been found in this scan session to avoid duplicates.
       for (const auto &entry : foundNodes) {
         if (entry.second.mac_address == addr) return; // already stored
       }
 
-      // ----- If not exist then push to list -----
+      // If it's a new, valid device, store its information in our map.
+      NimBLEAdvertisedDevice device = *advertisedDevice;
       foundNodes[addr] = {device, addr, advertisedDevice->getName()};
     }
   }
 
+  /**
+   * @brief Called when the BLE scan period ends.
+   */
   void onScanEnd(const NimBLEScanResults& results, int reason) override {
 
-    // ----- Send respond back to ESP8266 to send to node-red -----
-    size_t payloadSize = 4; // 4 bytes for node count
+    // Prepare a payload to send the list of found nodes back to the host controller via UART.
+    size_t payloadSize = 4; // Start with 4 bytes for the node count.
     for (const auto &entry : foundNodes) {
-
+        // Calculate the total size needed for all MAC addresses and names.
         payloadSize += 1 + std::string(entry.second.mac_address).size();      // mac length + mac string
-        payloadSize += 1 + entry.second.display_name.size();     // name length + name string
+        payloadSize += 1 + entry.second.display_name.size();                  // name length + name string
     }
 
-    // encode data to send to uart
+    // Create a byte vector and a pointer to fill it.
     std::vector<uint8_t> payload(payloadSize);
     uint8_t *ptr = payload.data();
 
+    // Encode the number of found nodes first.
     uint32_t count = foundNodes.size();
     memcpy(ptr, &count, 4);
     ptr += 4;
 
+    // Encode each node's MAC and name with a preceding length byte.
     for (const auto &entry : foundNodes) {
       uint8_t macLen = std::string(entry.second.mac_address).size();
       uint8_t nameLen = entry.second.display_name.size();
@@ -106,9 +147,10 @@ class ScanCallbacks : public NimBLEScanCallbacks {
       ptr += nameLen;
     }
 
+    // Send the compiled payload over serial to the host.
     sendSerial("res/scan", payload.data(), payload.size());
 
-    // rescan if not reach scan limit yet
+    // If we haven't reached the scan limit, start another scan cycle.
     if (countTimes <= BLE_SCAN_COUNT) {
       countTimes++;
       NimBLEDevice::getScan()->start(BLE_SCAN_TIME, false, true);
@@ -116,11 +158,15 @@ class ScanCallbacks : public NimBLEScanCallbacks {
   }
 };
 
-// =====================================================
-//                     UART LOGIC
-// =====================================================
+// =================================================================================
+//                                  UART LOGIC
+// =================================================================================
 
-// Decoding UART Serial to SerialMessage
+/**
+ * @brief A state machine to parse incoming messages from Serial2 based on a custom protocol.
+ * Protocol: [START_BYTE (0x00)] [16-BYTE COMMAND] [PAYLOAD] [END_BYTE (0xFF)]
+ * @return A SerialMessage struct. `valid` is true if a complete message was parsed.
+ */
 SerialMessage receiveSerialMessage() {
     static enum { WAIT_START, WAIT_CMD, WAIT_PAYLOAD, WAIT_END } state = WAIT_START;
     static SerialMessage msg;
@@ -177,19 +223,25 @@ SerialMessage receiveSerialMessage() {
     return SerialMessage{"", {}, 0, false}; // null message if error
 }
 
+/**
+ * @brief Sends a message over Serial2 using the custom protocol.
+ * @param cmd The 16-byte command string.
+ * @param payload Pointer to the data payload.
+ * @param length The length of the payload.
+ */
 void sendSerial(const char cmd[16], uint8_t *payload, unsigned int length) {
-
   Serial2.write(0x00);        // Start marker
   Serial2.write((uint8_t*)cmd, 16);    // 16-byte command
   Serial2.write(payload, length);     // Payload
   Serial2.write(0xFF);          // End marker
-  
 }
 
+// Convenience overload for sending a C-string as payload.
 void sendSerial(const char cmd[16], const char *text) {
   sendSerial(cmd, (uint8_t*)text, strlen(text));
 }
 
+// Convenience overload for sending a vector of uint32_t as payload.
 void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
     size_t payloadSize = list.size() * 4;  // 4 bytes per uint32_t
     uint8_t payload[payloadSize];
@@ -202,102 +254,85 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
     sendSerial(cmd, payload, payloadSize);
 }
 
+/**
+ * @brief Main dispatcher for handling commands received from the host via UART.
+ * @param msg The parsed serial message.
+ */
 void serialCallback(SerialMessage &msg) {
-
   Serial.println("Receiving serial message...");
 
+  // Command: "req/nodes" - Request a list of currently connected nodes.
   if (strcmp(msg.command, "req/nodes") == 0) {
-
-    
-    pref.begin("nodes", true);
-
+    pref.begin("nodes", true); // Open preferences in read-only mode.
     String json = pref.isKey("save_nodes") ? pref.getString("save_nodes") : "{}";
+    pref.end();
 
     DynamicJsonDocument doc(2048);
     DeserializationError error = deserializeJson(doc, json);
 
     DynamicJsonDocument result(2048);
-    const std::list<uint32_t> nodes = mesh.getNodeList();
+    const std::list<uint32_t> nodes = mesh.getNodeList(); // Get currently active nodes from painlessMesh.
 
-    // Serial.print("DEBUG : ");
-    // for (auto &n : nodes) {
-    //   Serial.print(String(n)+" ");
-    // }
-    // Serial.println();
+    // Filter the saved nodes to include only those that are currently online.
     if (!error) {
       for (JsonPair pair : doc.as<JsonObject>()) {
-        // Serial.print("DEBUG : ");
-        // Serial.print(pair.key().c_str());
         JsonObject obj = pair.value().as<JsonObject>();
         uint32_t node_id = obj["node_id"];
-        // Serial.println(" | " + String(node_id));
+        // Check if the node ID from storage exists in the list of active nodes.
         if (std::find(nodes.begin(), nodes.end(), node_id) != nodes.end()) {
-          // Serial.println("DEBUG : Reach condition");
           result[pair.key()] = obj;
-
           result[pair.key()]["state"] = getState(node_id);
-          
-          String s = result[pair.key()]["mac_address"];
-          // Serial.println("DEBUG : " + s);
         }
       }
     }
 
     String jsonResult;
     serializeJson(result, jsonResult);
-
-    Serial.println("DEBUG : " + jsonResult);
-    
     sendSerial("res/nodes", jsonResult == "null" ? "{}" : jsonResult.c_str());
-    pref.end();
   }
 
+  // Command: "req/scan" - Start a new BLE scan for unpaired devices.
   else if (strcmp(msg.command, "req/scan") == 0) {
-    foundNodes.clear();
+    foundNodes.clear(); // Clear results from previous scans.
     countTimes = 0;
     Serial.printf("Scanning for peripherals\n");
     NimBLEDevice::getScan()->start(BLE_SCAN_TIME);
   }
 
+  // Command: "req/pair" - Initiate pairing with a device found during a scan.
   else if (strcmp(msg.command, "req/pair") == 0) {
-    // Safely build string from payload
-
-
-
+    // The payload is the MAC address of the device to pair with.
     std::string mac(msg.length, '\0');
     memcpy(mac.data(), msg.payload, msg.length);
 
-
-    // Find node safely (don’t use operator[] directly)
     auto it = foundNodes.find(mac);
-
     if (it == foundNodes.end()) {
-
+      // If the device is not in our `foundNodes` map, pairing fails.
       String res = String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"failed to connect to node.\"}";
       sendSerial("res/pair", res.c_str());
       return;
     }
 
-
     MeshNode &node = it->second;
 
-
-
+    // Proceed if the device address is valid and we are not already in a pairing process.
     if (!node.device.getAddress().toString().empty() && !is_pairing) {
+      is_pairing = true; // Set the pairing flag.
 
-      is_pairing = true;
+      // Connect to the device via BLE.
       if (pClient->connect(node.device)) {
-
+        // Get the specific service for our mesh network.
         NimBLEUUID serviceID("c220cb58-0d9f-4405-a55a-da4794291e8f");
         NimBLERemoteService *pService = pClient->getService(serviceID);
 
         if (pService != nullptr) {
-
+          // Get the characteristics for writing the mesh credentials.
           auto gatewayCharacteristic = pService->getCharacteristic("46f42176-8d03-4241-843d-195aea0ea390");
           auto meshSSIDCharacteristic = pService->getCharacteristic("98da85e8-42d6-493f-8bff-5416b686f1d2");
           auto meshPasswordCharacteristic = pService->getCharacteristic("207cd133-188a-4503-8a94-17c6070aadce");
           auto meshPortCharacteristic = pService->getCharacteristic("fac0fc9c-f966-4685-bd92-ed4332481bf4");
 
+          // Write the mesh credentials and gateway ID to the device.
           if (gatewayCharacteristic && gatewayCharacteristic->canWrite())
             gatewayCharacteristic->writeValue(String(mesh.getNodeId()).c_str());
           if (meshSSIDCharacteristic && meshSSIDCharacteristic->canWrite())
@@ -309,12 +344,10 @@ void serialCallback(SerialMessage &msg) {
           sendSerial("res/pair", (String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"pairing to new node.\"}").c_str());
         } else {
           sendSerial("res/pair", (String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"failed to connect to node.\"}").c_str());
-        
         }
-
         pClient->disconnect();
       } else {
-        is_pairing = false;
+        is_pairing = false; // Reset flag on connection failure.
         sendSerial("res/pair", (String("{\"mac_address\":\"") + String(mac.c_str()) + "\",\"info\":\"failed to connect to node.\"}").c_str());
       }
     } else {
@@ -323,25 +356,24 @@ void serialCallback(SerialMessage &msg) {
     
   }
 
+  // Command: "req/unpair" - Tell a node to leave the mesh and forget credentials.
   else if (strcmp(msg.command, "req/unpair") == 0) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
 
     uint32_t node_id = static_cast<uint32_t>(std::stoul(message));
-
-    meshSend(node_id, "unpair", "");
+    meshSend(node_id, "unpair", ""); // Send the "unpair" command over the mesh.
   }
 
+  // Command: "req/allnodes" - Request a list of ALL nodes ever saved, not just online ones.
   else if (strcmp(msg.command, "req/allnodes") == 0) {
-    
     pref.begin("nodes", true);
     String json = pref.isKey("save_nodes") ? pref.getString("save_nodes") : "{}";
-    Serial.print("DEBUG :");
-    Serial.println(json);
     sendSerial("res/allnodes", json.c_str());
     pref.end();
   }
 
+  // Command: "req/state/update" - Force an update to a node's state.
   else if (strcmp(msg.command, "req/state/update") == 0) {
 
     std::string message(msg.length, '\0');
@@ -352,11 +384,11 @@ void serialCallback(SerialMessage &msg) {
     
     if (!error) {
       uint32_t nodeId = incoming["node_id"];
-
       updateState(nodeId, incoming["state"], true, false, false);
     }
   }
   
+  // Command: "req/mode/update" - Update a sensor node's GPIO operating mode
   else if (strcmp(msg.command, "req/mode/update") == 0) {
 
     std::string message(msg.length, '\0');
@@ -369,7 +401,6 @@ void serialCallback(SerialMessage &msg) {
       uint32_t nodeId = incoming["node_id"];
 
       JsonObject obj = incoming["mode"];
-
       String objStr;
       serializeJson(obj, objStr);
 
@@ -377,6 +408,7 @@ void serialCallback(SerialMessage &msg) {
     }
   }
 
+  // Command: "req/state/get" - Request the cached state of a specific node.
   else if (strcmp(msg.command, "req/state/get") == 0) {
 
     std::string message(msg.length, '\0');
@@ -397,6 +429,7 @@ void serialCallback(SerialMessage &msg) {
     sendSerial("res/state/get", outputStr.c_str());
   }
 
+  // Command: "req/config/set" - Set or update the automation configuration.
   else if (strcmp(msg.command, "req/config/set") == 0) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
@@ -413,9 +446,11 @@ void serialCallback(SerialMessage &msg) {
       pref.end();
 
       if (!error2) {
+        // Iterate through the provided configuration rules.
         for (JsonPair entry : input.as<JsonObject>()) {
           String nodeId = String(entry.key().c_str());
           
+          // Verify that the node ID in the config exists in our list of saved nodes.
           bool found = false;
           for (JsonPair saveNodeEntry : saveNodes.as<JsonObject>()) {
             uint32_t saveNodeID = saveNodeEntry.value()["node_id"];
@@ -429,15 +464,13 @@ void serialCallback(SerialMessage &msg) {
             configuration[nodeId] = entry.value();
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+            // Save the updated configuration to persistent storage.
             pref.begin("configuration", false);
-            
             String configStr;
             serializeJson(configuration, configStr);
-            
             pref.putString("config", configStr);
             Serial.println(pref.getString("config").c_str());
             pref.end();
-
           } else {
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"ERROR\",\"info\":\"node not found!\"}").c_str());
           }
@@ -449,31 +482,32 @@ void serialCallback(SerialMessage &msg) {
       sendSerial("res/config/set", "{\"status\":\"ERROR\",\"info\":\"Data format error!\"}");
     }
   }
+
+  // Command: "req/config/get" - Request the current automation configuration.
   else if (strcmp(msg.command, "req/config/get") == 0) {
-    
     String configStr;
     serializeJson(configuration, configStr);
 
     sendSerial("res/config/get", configStr.c_str());
-
   }
-  else if (strcmp(msg.command, "req/config/rem") == 0) {
 
+  // Command: "req/config/rem" - Remove an automation configuration for a node.
+  else if (strcmp(msg.command, "req/config/rem") == 0) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
 
-    configuration.remove(message);
+    configuration.remove(message); // Remove from in-memory config.
     sendSerial("res/config/rem", ("{\"node_id\":"+String(message.c_str())+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+    // Clean up the triggerer map to reflect the change.
     for (auto &entry : relayTriggerer) {
       entry.second.erase(entry.first);
     }
 
+    // Save the modified configuration to persistent storage.
     pref.begin("configuration", false);
-    
     String configStr;
     serializeJson(configuration, configStr);
-    
     pref.putString("config", configStr);
     pref.end();
   }
@@ -483,6 +517,14 @@ void serialCallback(SerialMessage &msg) {
 //                     STATE LOGIC
 // =====================================================
 
+/**
+ * @brief Central function to update a node's state.
+ * @param node_id The ID of the node to update.
+ * @param state A JsonObject representing the new state.
+ * @param callback If true, send the state update over the mesh to the node and send a response via UART.
+ * @param sensor If true, this state update is from a sensor and may trigger automations.
+ * @param isAuto If true, the update was triggered by automation, affecting the UART response format.
+ */
 void updateState(uint32_t node_id, JsonObject state, bool callback, bool sensor, bool isAuto) {
 
   String stateStr;
@@ -512,6 +554,11 @@ void updateState(uint32_t node_id, JsonObject state, bool callback, bool sensor,
   }
 }
 
+/**
+ * @brief Retrieves the cached state of a node.
+ * @param node_id The ID of the node.
+ * @return A DynamicJsonDocument containing the state. Returns an empty object on failure.
+ */
 DynamicJsonDocument getState(uint32_t node_id) {
   DynamicJsonDocument output(512); // give enough space
 
@@ -532,6 +579,12 @@ DynamicJsonDocument getState(uint32_t node_id) {
 //                     MESH LOGIC
 // =====================================================
 
+/**
+ * @brief Callback function that handles all incoming messages from the mesh network.
+ * Messages use a "command|payload" format.
+ * @param from The node ID of the sender.
+ * @param msg The received message string.
+ */
 void meshCallback(uint32_t from, String &msg) {
 
   int sep = msg.indexOf('|');
@@ -652,18 +705,28 @@ void meshCallback(uint32_t from, String &msg) {
   }
 }
 
+/**
+ * @brief Helper function to send a message to a specific node on the mesh.
+ * @param mesh_id The destination node ID.
+ * @param cmd The command string.
+ * @param text The payload string.
+ */
 void meshSend(uint32_t mesh_id, const char *cmd, String text) {
-
   String output = String(cmd) + '|' + String(text);
-
   mesh.sendSingle(mesh_id, output.c_str());
-  
 }
 
 // =====================================================
 //                 AUTOMATION LOGIC
 // =====================================================
 
+/**
+ * @brief Evaluates an automation condition string against a sensor's state.
+ * Examples: "temp>25.5", "humidity<=60"
+ * @param sensorId The node ID of the sensor.
+ * @param condition The condition string to evaluate.
+ * @return 1 if true, 0 if false, -1 on error or if condition doesn't apply.
+ */
 int checkCondition(uint32_t sensorId, String condition) {
   String left, right, op;
   if (condition.indexOf(">=") != -1) {
