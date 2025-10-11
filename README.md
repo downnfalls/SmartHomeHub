@@ -1,6 +1,3 @@
-Of course\! Here is a complete `README.md` file for your Smart Home IoT project based on the code you provided.
-
------
 
 # Smart Home IoT Project 🏠✨
 
