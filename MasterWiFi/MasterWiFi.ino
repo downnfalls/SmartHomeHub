@@ -30,6 +30,8 @@
 #define TOPIC_STATE_GET_RESPONSE      "res/state/get"
 #define TOPIC_MODE_UPDATE_REQUEST     "req/mode/update"
 #define TOPIC_MODE_UPDATE_RESPONSE    "res/mode/update"
+#define TOPIC_MODE_GET_REQUEST        "req/mode/get"
+#define TOPIC_MODE_GET_RESPONSE       "res/mode/get"
 #define TOPIC_CONFIGURATION_SET_REQUEST     "req/config/set"
 #define TOPIC_CONFIGURATION_SET_RESPONSE    "res/config/set"
 #define TOPIC_CONFIGURATION_REMOVE_REQUEST  "req/config/remove"
@@ -98,7 +100,7 @@ void setup() {
     mqtt_server[39] = '\0';
   }
 
-  sprintf(mqtt_server, "%s", "192.168.1.150");
+  sprintf(mqtt_server, "%s", "49.231.43.37");
 
   if (strlen(mqtt_server) == 0) {
     wm.resetSettings();  // force config portal if no data
@@ -127,7 +129,7 @@ void setup() {
 
   // --- MQTT setup & connect ---
   pubSubClient.setServer(mqtt_server, 1883);
-  pubSubClient.setBufferSize(1024);
+  pubSubClient.setBufferSize(2048);
   pubSubClient.setCallback(mqttCallback);
   connectMQTT();
 }
@@ -156,10 +158,6 @@ void loop() {
 
 
 void mqttCallback(char* topic, byte* message, unsigned int length) {
-  digitalWrite(2, HIGH);
-  delay(200);
-  digitalWrite(2, LOW);
-
   
   String incoming;
   for (unsigned int i = 0; i < length; i++) incoming += (char)message[i];
@@ -208,6 +206,9 @@ void mqttCallback(char* topic, byte* message, unsigned int length) {
   else if (String(topic) == TOPIC_CONFIGURATION_REMOVE_REQUEST) {
     sendSerial("req/config/rem", incoming.c_str());
   }
+  else if (String(topic) == TOPIC_MODE_GET_REQUEST) {
+    sendSerial("req/mode/get", incoming.c_str());
+  }
 }
 
 void connectMQTT() {
@@ -215,7 +216,7 @@ void connectMQTT() {
   if (!pubSubClient.connected()) {
     String clientId = "ESP8266-GW-";
     clientId += String(ESP.getChipId(), HEX); // shorter clientId for ESP8266
-    if (pubSubClient.connect(clientId.c_str())) {
+    if (pubSubClient.connect(clientId.c_str(), "SmartHomeIOT", "2147483647")) {
       pubSubClient.subscribe(TOPIC_PING);
       pubSubClient.subscribe(TOPIC_MESH_NODE_REQUEST);
       pubSubClient.subscribe(TOPIC_MESH_SCAN_REQUEST);
@@ -225,6 +226,7 @@ void connectMQTT() {
       pubSubClient.subscribe(TOPIC_STATE_UPDATE_REQUEST);
       pubSubClient.subscribe(TOPIC_STATE_GET_REQUEST);
       pubSubClient.subscribe(TOPIC_MODE_UPDATE_REQUEST);
+      pubSubClient.subscribe(TOPIC_MODE_GET_REQUEST);
       pubSubClient.subscribe(TOPIC_CONFIGURATION_REMOVE_REQUEST);
       pubSubClient.subscribe(TOPIC_CONFIGURATION_GET_REQUEST);
       pubSubClient.subscribe(TOPIC_CONFIGURATION_SET_REQUEST);
@@ -471,5 +473,10 @@ void serialCallback(SerialMessage &msg) {
     std::string message(msg.length, '\0');
     memcpy(message.data(), msg.payload, msg.length);
     pubSubClient.publish(TOPIC_STATE_AUTO_UPDATE, message.c_str());
+  }
+  else if (strcmp(msg.command, "res/mode/get") == 0) {
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    pubSubClient.publish(TOPIC_MODE_GET_RESPONSE, message.c_str());
   }
 }

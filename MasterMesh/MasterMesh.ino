@@ -282,6 +282,9 @@ void serialCallback(SerialMessage &msg) {
         if (std::find(nodes.begin(), nodes.end(), node_id) != nodes.end()) {
           result[pair.key()] = obj;
           result[pair.key()]["state"] = getState(node_id);
+          if (result[pair.key()]["node_type"] == "relay") {
+            result[pair.key()]["config"] = configuration[String(node_id)];
+          }
         }
       }
     }
@@ -406,6 +409,16 @@ void serialCallback(SerialMessage &msg) {
 
       meshSend(nodeId, "update_mode", objStr);
     }
+  }
+
+  else if (strcmp(msg.command, "req/mode/get") == 0) {
+
+    std::string message(msg.length, '\0');
+    memcpy(message.data(), msg.payload, msg.length);
+    
+    uint32_t node_id = static_cast<uint32_t>(std::stoul(message));
+    
+    meshSend(node_id, "get_mode", "get_mode");
   }
 
   // Command: "req/state/get" - Request the cached state of a specific node.
@@ -702,6 +715,11 @@ void meshCallback(uint32_t from, String &msg) {
     if (!error) {
       updateState(from, state.as<JsonObject>(), false, cmd == "state_update_sensor", false);
     }
+  }
+
+  else if (cmd == "get_mode_response") {
+    String res = String("{\"node_id\":") + String(from) + ",\"mode\":" + payload + "}";
+    sendSerial("res/mode/get", res.c_str());
   }
 }
 

@@ -224,6 +224,13 @@ void meshCallback(uint32_t from, String &msg) {
     else if (cmd == "get_state") {
       sendStateUpdate();
     }
+
+    else if (cmd == "get_mode") {
+      String outputStr;
+      serializeJson(gpioMode, outputStr);
+
+      meshSend(mesh_gateway, "get_mode_response", outputStr);
+    }
   }
 }
 
