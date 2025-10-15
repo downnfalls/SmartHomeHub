@@ -259,7 +259,7 @@ void sendSerial(const char cmd[16], std::vector<uint32_t> &list) {
  * @param msg The parsed serial message.
  */
 void serialCallback(SerialMessage &msg) {
-  Serial.println("Receiving serial message...");
+  //Serial.println("Receiving serial message...");
 
   // Command: "req/nodes" - Request a list of currently connected nodes.
   if (strcmp(msg.command, "req/nodes") == 0) {
@@ -298,7 +298,7 @@ void serialCallback(SerialMessage &msg) {
   else if (strcmp(msg.command, "req/scan") == 0) {
     foundNodes.clear(); // Clear results from previous scans.
     countTimes = 0;
-    Serial.printf("Scanning for peripherals\n");
+    //Serial.printf("Scanning for peripherals\n");
     NimBLEDevice::getScan()->start(BLE_SCAN_TIME);
   }
 
@@ -467,7 +467,9 @@ void serialCallback(SerialMessage &msg) {
           bool found = false;
           for (JsonPair saveNodeEntry : saveNodes.as<JsonObject>()) {
             uint32_t saveNodeID = saveNodeEntry.value()["node_id"];
-            if (((uint32_t) nodeId.toInt()) == saveNodeID) {
+            //Serial.println(String(saveNodeID) + " " +nodeId);
+            if (strtoul(nodeId.c_str(), NULL, 10) == saveNodeID) {
+              //Serial.println("FOUND");
               found = true;
               break;
             }
@@ -477,13 +479,17 @@ void serialCallback(SerialMessage &msg) {
             configuration[nodeId] = entry.value();
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+            relayTriggerer[entry.value()["r1"]["node_id"].as<uint32_t>()].insert(strtoul(nodeId.c_str(), NULL, 10));
+            relayTriggerer[entry.value()["r2"]["node_id"].as<uint32_t>()].insert(strtoul(nodeId.c_str(), NULL, 10));
+
             // Save the updated configuration to persistent storage.
             pref.begin("configuration", false);
             String configStr;
             serializeJson(configuration, configStr);
             pref.putString("config", configStr);
-            Serial.println(pref.getString("config").c_str());
             pref.end();
+
+            
           } else {
             sendSerial("res/config/set", ("{\"node_id\":"+nodeId+",\"status\":\"ERROR\",\"info\":\"node not found!\"}").c_str());
           }
@@ -512,9 +518,14 @@ void serialCallback(SerialMessage &msg) {
     configuration.remove(message); // Remove from in-memory config.
     sendSerial("res/config/rem", ("{\"node_id\":"+String(message.c_str())+",\"status\":\"OK\",\"info\":\"OK\"}").c_str());
 
+    uint32_t nodeId = static_cast<uint32_t>(std::stoul(message));
     // Clean up the triggerer map to reflect the change.
     for (auto &entry : relayTriggerer) {
-      entry.second.erase(entry.first);
+      entry.second.erase(nodeId);
+      for (auto &s : entry.second) {
+        Serial.print(String(s) + " ");
+      }
+      Serial.println();
     }
 
     // Save the modified configuration to persistent storage.
@@ -605,8 +616,8 @@ void meshCallback(uint32_t from, String &msg) {
   String cmd = msg.substring(0, sep);
   String payload = msg.substring(sep + 1);
 
-  Serial.println("Receiving mesh message...");
-  Serial.println(String(from)+": "+cmd+"|"+payload);
+  //Serial.println("Receiving mesh message...");
+  //Serial.println(String(from)+": "+cmd+"|"+payload);
 
   if (cmd == "unpairing") {
     sendSerial("res/unpair", ("{\"node_id\":"+String(from)+",\"mac_address\":\""+payload+"\",\"info\":\"unparing\"}").c_str());
@@ -662,9 +673,9 @@ void meshCallback(uint32_t from, String &msg) {
 
       if (!error) {
 
-        Serial.println("===========================");
-        Serial.println(mac_address);
-        Serial.println("===========================");
+        //Serial.println("===========================");
+        //Serial.println(mac_address);
+        //Serial.println("===========================");
         doc[mac_address] = nodeJson;
 
         String docStr;
@@ -672,8 +683,6 @@ void meshCallback(uint32_t from, String &msg) {
 
         pref.putString("save_nodes", docStr);
 
-        // Serial.print("DEBUG :");
-        // Serial.println(pref.getString("save_nodes", "NO DATA"));
         pref.end();
 
         if (cmd == "pair_res_info") {
@@ -799,13 +808,13 @@ void triggerStateUpdate(uint32_t nodeId) {
   uint32_t sensorR1 = configuration[String(nodeId)]["r1"]["node_id"];
   String conditionR1 = configuration[String(nodeId)]["r1"]["condition"];
 
-  Serial.printf("condition r1 : %s\n", conditionR1.c_str());
+  //Serial.printf("condition r1 : %s\n", conditionR1.c_str());
   int result1 = checkCondition(sensorR1, conditionR1);
 
   uint32_t sensorR2 = configuration[String(nodeId)]["r2"]["node_id"];
   String conditionR2 = configuration[String(nodeId)]["r2"]["condition"];
 
-  Serial.printf("condition r2 : %s\n", conditionR2.c_str());
+  //Serial.printf("condition r2 : %s\n", conditionR2.c_str());
   int result2 = checkCondition(sensorR2, conditionR2);
 
   DynamicJsonDocument state(256);
@@ -817,7 +826,7 @@ void triggerStateUpdate(uint32_t nodeId) {
 
   String stateStr;
   serializeJson(state, stateStr);
-  Serial.printf("State Triggered: %s\n", stateStr.c_str());
+  //Serial.printf("State Triggered: %s\n", stateStr.c_str());
 
   if (result1 != -1 || result2 != -1) updateState(nodeId, state.as<JsonObject>(), true, false, true);
 }
@@ -838,7 +847,7 @@ void setup() {
 
   pref.begin("configuration", true);
   String configStr = pref.isKey("config") ? pref.getString("config") : "{}";
-  Serial.printf("config: %s\n", configStr.c_str());
+  //Serial.printf("config: %s\n", configStr.c_str());
   DeserializationError error = deserializeJson(configuration, configStr);
 
   if (!error) {
@@ -883,7 +892,6 @@ void loop() {
 
   if (millis() - lastTime >= 1000) {
     lastTime = millis();
-    // Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
 
     for (uint32_t nodeId : mesh.getNodeList()) {
       if (nodeStateMap.find(nodeId) == nodeStateMap.end()) {

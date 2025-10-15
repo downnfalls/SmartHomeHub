@@ -533,6 +533,9 @@ void setup() {
   } else {
 
     // Start Bluetooth if no mesh credentials
+    Serial.println("No mesh credentials found.");
+    Serial.println("Start bluetooth advertising...");
+
     bluetoothAdvertise();
   }
 }
@@ -546,6 +549,7 @@ bool info = false;
 void loop() {
 
   if (mesh_init) {
+    Serial.println("aaa");
     mesh.update();
  
     if (mesh.isConnected(mesh_gateway) && !info) {
